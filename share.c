@@ -17,37 +17,33 @@
 #include <fcntl.h>
 
 // Accept and handle a single connection
-void handleSingle(int sockfd) {
+ssize_t handleSingle(int sockfd, int datafd, int datasz) {
 
-    int connfd, datafd, wrote;
-    struct stat datastat;
+    int connfd;
+    ssize_t wrote;
 
     connfd = accept(sockfd, NULL, 0);
     if (connfd == -1) {
         error(-1, errno, "Error 'accept' on socket");
     }
 
-    datafd = open("payload.txt", O_RDONLY);
-    if (datafd == -1) {
-        error(-1, errno, "Error opening payload");
-    }
-    fstat(datafd, &datastat);
-
-    wrote = sendfile(connfd, datafd, NULL, datastat.st_size);
+    wrote = sendfile(connfd, datafd, NULL, datasz);
     if (wrote == -1) {
         error(-1, errno, "Error senfile");
     }
-    printf("Wrote %d / %d bytes\n", wrote, (unsigned int) datastat.st_size);
 
     close(connfd);
+    return wrote;
 }
 
 // Start here
 int main(int argc, char **argv) {
 
-    int sockfd, err, optval;
+    int sockfd, err, datafd, optval, hits;
+    ssize_t wrote;
     struct in_addr localhost;
     struct sockaddr_in addr;
+    struct stat datastat;
 
     sockfd = socket(AF_INET, SOCK_STREAM, 0);  // Later: SOCK_STREAM | SOCK_NONBLOCK. Or not??
     if (sockfd == -1) {
@@ -80,10 +76,26 @@ int main(int argc, char **argv) {
         error(err, errno, "Error listening on socket");
     }
 
+    datafd = open("payload.txt", O_RDONLY);
+    if (datafd == -1) {
+        error(-1, errno, "Error opening payload");
+    }
+    fstat(datafd, &datastat);
+
+    hits = 0;
     while (1) {
-        handleSingle(sockfd);
+        if (lseek(datafd, 0, SEEK_SET) == -1) {
+            error(-1, errno, "Error seeking back to payload start");
+        }
+
+        wrote = handleSingle(sockfd, datafd, datastat.st_size);
+
+        hits++;
+        printf("%d: Wrote %d / %d bytes\n",
+                hits, (int)wrote, (unsigned int) datastat.st_size);
     }
 
+    close(datafd);
     close(sockfd);
 
     return 0;
