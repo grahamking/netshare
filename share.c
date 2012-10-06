@@ -1,8 +1,5 @@
 
-/*
- * EXIT_FAILURE constant
- * splice & tee
- */
+#define _GNU_SOURCE
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,49 +18,46 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-// Accept and handle a single connection
-ssize_t handleSingle(int sockfd, int datafd, int datasz) {
+#include <sys/epoll.h>
 
-    int connfd;
+#define HEADERS "HTTP/1.0 200 OK\n\n"
+
+// Accept and handle a single connection
+ssize_t handleSingle(int connfd, int datafd, int datasz) {
+
     ssize_t wrote;
 
-    connfd = accept(sockfd, NULL, 0);
-    if (connfd == -1) {
-        error(-1, errno, "Error 'accept' on socket");
-    }
-
+    write(connfd, HEADERS, strlen(HEADERS));
     wrote = sendfile(connfd, datafd, NULL, datasz);
     if (wrote == -1) {
-        error(-1, errno, "Error senfile");
+        error(EXIT_FAILURE, errno, "Error senfile");
     }
 
-    close(connfd);
     return wrote;
 }
 
 // Start here
 int main(int argc, char **argv) {
 
-    int sockfd, err, datafd, optval, hits;
     ssize_t wrote;
     struct in_addr localhost;
     struct sockaddr_in addr;
     struct stat datastat;
 
-    sockfd = socket(AF_INET, SOCK_STREAM, 0);  // Later: SOCK_STREAM | SOCK_NONBLOCK. Or not??
+    int sockfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (sockfd == -1) {
-        error(-1, errno, "Error creating socket");
+        error(EXIT_FAILURE, errno, "Error creating socket");
     }
 
-    optval = 1;
+    int optval = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) == -1) {
-        error(-1, errno, "Error setting SO_REUSEADDR on socket");
+        error(EXIT_FAILURE, errno, "Error setting SO_REUSEADDR on socket");
     }
 
     memset(&localhost, 0, sizeof(struct in_addr));
-    err = inet_pton(AF_INET, "127.0.0.1", &localhost);
+    int err = inet_pton(AF_INET, "127.0.0.1", &localhost);
     if (err != 1) {
-        error(-1, errno, "Error converting 127.0.0.1 to network format");
+        error(EXIT_FAILURE, errno, "Error converting 127.0.0.1 to network format");
     }
 
     memset(&addr, 0, sizeof(struct sockaddr_in));
@@ -73,7 +67,7 @@ int main(int argc, char **argv) {
 
     err = bind(sockfd, (struct sockaddr *) &addr, sizeof(struct sockaddr_in));
     if (err == -1) {
-        error(-1, errno, "Error binding socket");
+        error(EXIT_FAILURE, errno, "Error binding socket");
     }
 
     err = listen(sockfd, SOMAXCONN);
@@ -81,23 +75,66 @@ int main(int argc, char **argv) {
         error(err, errno, "Error listening on socket");
     }
 
-    datafd = open("payload.txt", O_RDONLY);
+    int datafd = open("payload.txt", O_RDONLY);
     if (datafd == -1) {
-        error(-1, errno, "Error opening payload");
+        error(EXIT_FAILURE, errno, "Error opening payload");
     }
     fstat(datafd, &datastat);
 
-    hits = 0;
+    int efd = epoll_create(1);
+    if (efd == -1) {
+        error(EXIT_FAILURE, errno, "Error creating epoll descriptor");
+    }
+
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = sockfd;
+    err = epoll_ctl(efd, EPOLL_CTL_ADD, sockfd, &ev);
+    if (err == -1) {
+        error(EXIT_FAILURE, errno, "Error adding to epoll descriptor");
+    }
+
+    int hits = 0;
+    int connfd = -1;
     while (1) {
         if (lseek(datafd, 0, SEEK_SET) == -1) {
-            error(-1, errno, "Error seeking back to payload start");
+            error(EXIT_FAILURE, errno, "Error seeking back to payload start");
         }
 
-        wrote = handleSingle(sockfd, datafd, datastat.st_size);
+        err = epoll_wait(efd, &ev, 1, -1);
+        if (err == -1) {
+            error(EXIT_FAILURE, errno, "Error on epoll_wait");
+        }
 
-        hits++;
-        printf("%d: Wrote %d / %d bytes\n",
-                hits, (int)wrote, (unsigned int) datastat.st_size);
+        printf("Is ready: %d\n", ev.data.fd);
+        if (ev.data.fd == sockfd) {
+
+            connfd = accept4(sockfd, NULL, 0, SOCK_NONBLOCK);
+            if (connfd == -1) {
+                error(EXIT_FAILURE, errno, "Error 'accept' on socket");
+            }
+
+            ev.events = EPOLLIN;
+            ev.data.fd = connfd;
+            err = epoll_ctl(efd, EPOLL_CTL_ADD, connfd, &ev);
+            if (err == -1) {
+                error(EXIT_FAILURE, errno, "Error adding to epoll descriptor");
+            }
+
+        } else {
+            connfd = ev.data.fd;
+            wrote = handleSingle(connfd, datafd, datastat.st_size);
+
+            err = epoll_ctl(efd, EPOLL_CTL_DEL, connfd, NULL);
+            if (err == -1) {
+                error(EXIT_FAILURE, errno, "Error removing connfd from epoll");
+            }
+            close(connfd);
+
+            hits++;
+            printf("%d: Wrote %d / %d bytes\n",
+                    hits, (int)wrote, (unsigned int) datastat.st_size);
+        }
     }
 
     close(datafd);
