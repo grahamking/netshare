@@ -1,4 +1,9 @@
 
+/*
+ * EXIT_FAILURE constant
+ * splice & tee
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
