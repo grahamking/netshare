@@ -13,6 +13,6 @@ while True:
     sys.stdout.write(l.decode("utf8"))
     sys.stdout.flush()
 
-    time.sleep(1)
+    time.sleep(0.3)
 
 f.close()
