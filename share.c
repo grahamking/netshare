@@ -51,7 +51,9 @@ char buf[128];      // Buffer for consuming reads
 void swrite(int connfd, int datafd, int efd, off_t datasz) {
 
     if (offset[connfd] == 0) {
-        write(connfd, headers, strlen(headers));
+        if ( write(connfd, headers, strlen(headers)) == -1 ) {
+            error(0, errno, "Error writing headers\n");
+        }
     }
 
     ssize_t num_wrote = sendfile(connfd, datafd, &offset[connfd], datasz - offset[connfd]);
