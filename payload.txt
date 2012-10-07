@@ -1,1 +1,1 @@
-payload-test.txt
+payload-small.txt
