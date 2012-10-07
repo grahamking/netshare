@@ -45,7 +45,6 @@ off_t *offset;  // Stores current offset within data file at index's fd
 uint32_t offsetsz = 100;    // Size of 'offset'
 
 char *headers;      // HTTP headers
-char buf[128];      // Buffer for consuming reads
 
 // Write to socket
 void swrite(int connfd, int datafd, int efd, off_t datasz) {
@@ -73,7 +72,7 @@ void swrite(int connfd, int datafd, int efd, off_t datasz) {
         // We're done writing.
         shutdown(connfd, SHUT_WR);
 
-        // Stop listening to EPOLLOUT
+        // Stop listening to EPOLLOUT. Only waiting for HUP now.
         struct epoll_event ev;
         ev.events = EPOLLIN;
         ev.data.fd = connfd;
@@ -92,24 +91,6 @@ void sclose(int connfd) {
     if (close(connfd) == -1) {      // close also removes it from epoll
         error(EXIT_FAILURE, errno, "Error closing connfd");
     }
-}
-
-// Read from socket
-void sread(int connfd) {
-
-    ssize_t num_read = read(connfd, &buf, sizeof(buf));
-    //printf("Read: %d\n", num_read);
-
-    if (num_read == -1) {
-
-        if (errno == EAGAIN || errno == ECONNRESET) {
-            // Socket not ready or client closed connection
-            // epoll will tell us the next step
-            return;
-        }
-        error(EXIT_FAILURE, errno, "Error reading from connfd");
-    }
-
 }
 
 // Increase size of offset storage
@@ -146,7 +127,7 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
         grow_offset();
     }
 
-    evp->events = EPOLLIN | EPOLLOUT;
+    evp->events = EPOLLOUT;
     evp->data.fd = connfd;
     if (epoll_ctl(efd, EPOLL_CTL_ADD, connfd, evp) == -1) {
         error(EXIT_FAILURE, errno, "Error adding to epoll descriptor");
@@ -175,10 +156,6 @@ void do_event(
 
         if (evp->events & EPOLLOUT) {
             swrite(connfd, datafd, efd, datasz);
-        }
-
-        if (evp->events & EPOLLIN) {
-            sread(connfd);
         }
 
         if (evp->events & EPOLLHUP) {
