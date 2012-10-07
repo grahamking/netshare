@@ -11,11 +11,26 @@
  *
  * Copyright 2012 Graham King <graham@gkgk.org>
  * GNU Public license <-- TO DO: add it
- *  ---
+ * ---
  *
- *  On loopback can get ~ 7k requests / sec, with 8k jpeg.
- *  Using ab -n 5000 -c 50 for tests.
- *  Concurrency from 20 - 500 gets similar results
+ * On loopback can get ~ 7k requests / sec, with 8k jpeg.
+ * Using ab -n 5000 -c 50 for tests.
+ * Concurrency from 20 - 500 gets similar results
+ *
+ * ---
+ *
+ * splice ideas:
+ *
+ * init:
+ *   mmap to get page aligned memory.
+ *   Write headers there. Load entire file there.
+ *   vmsplice gift pages to kernel.
+ *
+ * on accept:
+ *   tee the pipe and cache it
+ * on swrite:
+ *   splice pipe to socket
+ *   pipe maintains it's own position, no offset needed
  */
 
 #define _GNU_SOURCE
@@ -46,12 +61,62 @@
 #define USAGE "USAGE: share [-h host] [-p port] [-m mime/type] <filename>\n"
 #define HEAD_TMPL "HTTP/1.0 200 OK\nContent-Type: %s\nContent-Length: %ld\n\n"
 
-off_t *offset;  // Stores current offset within data file at index's fd
+loff_t *offset;  // Stores current offset within data file at index's fd
 uint32_t offsetsz = 100;    // Size of 'offset'
+int pipes[100];
 
 char *headers;      // HTTP headers
 
 // Write to socket
+void swrite(int connfd, int orig_pipefd, int efd, off_t datasz) {
+    if (offset[connfd] == 0) {
+        printf("Creating pipe\n");
+        // Copy pipe so we don't consume it
+        int pipefds[2];
+        pipe(pipefds);
+        if (tee(orig_pipefd, pipefds[1], datasz, 0) == -1) {
+            error(EXIT_FAILURE, errno, "Error on tee");
+        }
+        pipes[connfd] = pipefds[0];
+    }
+    int pipefd = pipes[connfd];
+
+    ssize_t num_wrote = splice(
+            pipefd,
+            0,
+            connfd,
+            0,
+            datasz - offset[connfd],
+            SPLICE_F_NONBLOCK);
+
+    if (num_wrote == -1) {
+        if (errno == EAGAIN || errno == ECONNRESET) {
+            // No data or client closed connection.
+            // epoll will tell us the next step
+            //printf("EAGAIN\n");
+            return;
+        }
+        error(EXIT_FAILURE, errno, "Error splicing out to socket");
+    }
+    printf("num_wrote: %d\n", num_wrote);
+
+    offset[connfd] += num_wrote;
+    if (offset[connfd] >= datasz) {
+        // We're done writing.
+        printf("Shutdown\n");
+        shutdown(connfd, SHUT_WR);
+
+        // Stop listening to EPOLLOUT. Only waiting for HUP now.
+        struct epoll_event ev;
+        ev.events = EPOLLIN;
+        ev.data.fd = connfd;
+        if (epoll_ctl(efd, EPOLL_CTL_MOD, connfd, &ev) == -1) {
+            error(EXIT_FAILURE, errno, "Error changing epoll descriptor");
+        }
+    }
+
+}
+/*
 void swrite(int connfd, int datafd, int efd, off_t datasz) {
 
     if (offset[connfd] == 0) {
@@ -86,6 +151,7 @@ void swrite(int connfd, int datafd, int efd, off_t datasz) {
         }
     }
 }
+*/
 
 // Close socket
 void sclose(int connfd) {
@@ -101,9 +167,9 @@ void sclose(int connfd) {
 // Increase size of offset storage
 void grow_offset() {
 
-    int offtsz = sizeof(off_t);
-    off_t *old_offset = offset;
-    off_t *new_offset = malloc(offtsz * offsetsz * 2);
+    int offtsz = sizeof(loff_t);
+    loff_t *old_offset = offset;
+    loff_t *new_offset = malloc(offtsz * offsetsz * 2);
     memset(new_offset, 0, offtsz * offsetsz * 2);
 
     memcpy(new_offset, old_offset, offtsz * offsetsz);
@@ -145,7 +211,7 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
 void do_event(
         struct epoll_event *evp,
         int sockfd,
-        int datafd,
+        int pipefd,
         int efd,
         off_t datasz) {
 
@@ -160,7 +226,7 @@ void do_event(
         //printf("Events: %d\n", evp->events);
 
         if (evp->events & EPOLLOUT) {
-            swrite(connfd, datafd, efd, datasz);
+            swrite(connfd, pipefd, efd, datasz);
         }
 
         if (evp->events & EPOLLHUP) {
@@ -232,7 +298,7 @@ int start_epoll(int sockfd) {
 }
 
 // Wait for epoll events and act on them
-void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
+void main_loop(int efd, int sockfd, int pipefd, off_t datasz) {
 
     int i;
     int num_ready;
@@ -246,7 +312,7 @@ void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
         }
 
         for (i = 0; i < num_ready; i++) {
-            do_event(&events[i], sockfd, datafd, efd, datasz);
+            do_event(&events[i], sockfd, pipefd, efd, datasz);
         }
     }
 }
@@ -265,12 +331,34 @@ int load_file(char *filename, off_t *datasz) {
     fstat(datafd, &datastat);
     *datasz = datastat.st_size; // Output param
 
+    /*
     int err = readahead(datafd, 0, *datasz);
     if (err == -1) {
         error(EXIT_FAILURE, errno, "Error readahead of data file");
     }
+    */
 
     return datafd;
+}
+
+int preload(int datafd, off_t datasz) {
+
+    int pfd[2];
+    if (pipe(pfd) == -1) {
+        error(EXIT_FAILURE, errno, "Error creating pipe\n");
+    }
+
+    if (write(pfd[1], headers, strlen(headers)) == -1) {
+        error(0, errno, "Error writing headers to pipe\n");
+    }
+
+    ssize_t num_spliced = splice(datafd, 0, pfd[1], 0, datasz, 0);
+    printf("Loaded %d\n", num_spliced);
+    if (num_spliced == -1) {
+        error(EXIT_FAILURE, errno, "Error splicing file to pipe\n");
+    }
+
+    return pfd[0];
 }
 
 // Parse command line arguments
@@ -320,8 +408,9 @@ int main(int argc, char **argv) {
     printf("Serving %s with mime type %s on %s:%d\n",
             *filename, mimetype, address, port);
 
-    offset = malloc(sizeof(off_t) * offsetsz);
-    memset(offset, 0, sizeof(off_t) * offsetsz);
+    offset = malloc(sizeof(loff_t) * offsetsz);
+    memset(offset, 0, sizeof(loff_t) * offsetsz);
+    memset(pipes, 0, 100);
 
     int sockfd = start_sock(address, port);
 
@@ -331,9 +420,11 @@ int main(int argc, char **argv) {
     headers = malloc(strlen(HEAD_TMPL) + 12);
     sprintf(headers, HEAD_TMPL, mimetype, datasz);
 
+    int pipefd = preload(datafd, datasz);
+
     int efd = start_epoll(sockfd);
 
-    main_loop(efd, sockfd, datafd, datasz);
+    main_loop(efd, sockfd, pipefd, datasz + strlen(headers));
 
     int err = close(datafd);
     if (err == -1) {
