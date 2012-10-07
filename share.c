@@ -47,7 +47,7 @@ char *headers;      // HTTP headers
 char buf[128];      // Buffer for consuming reads
 
 // Write to socket
-void swrite(int connfd, int datafd, off_t datasz) {
+void swrite(int connfd, int datafd, int efd, off_t datasz) {
 
     if (offset[connfd] == 0) {
         // Later: Set TCP CORK
@@ -68,9 +68,15 @@ void swrite(int connfd, int datafd, off_t datasz) {
     //printf("%d: Wrote total %ld / %ld bytes\n", connfd, offset[connfd], datasz);
 
     if (offset[connfd] >= datasz) {
-        // We're done writing
-        //printf("Shutdown %d\n", connfd);
+        // We're done writing.
         shutdown(connfd, SHUT_WR);
+
+        struct epoll_event ev;
+        ev.events = EPOLLIN;  // Don't listen to EPOLLOUT
+        ev.data.fd = connfd;
+        if (epoll_ctl(efd, EPOLL_CTL_MOD, connfd, &ev) == -1) {
+            error(EXIT_FAILURE, errno, "Error changing epoll descriptor");
+        }
     }
 }
 
@@ -161,7 +167,7 @@ void do_event(
         //printf("Events: %d\n", evp->events);
 
         if (evp->events & EPOLLOUT) {
-            swrite(connfd, datafd, datasz);
+            swrite(connfd, datafd, efd, datasz);
         }
 
         if (evp->events & EPOLLIN) {
