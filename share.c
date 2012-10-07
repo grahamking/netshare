@@ -99,7 +99,6 @@ void grow_offset() {
     free(old_offset);
 
     offsetsz *= 2;
-    printf("Offset size: %d\n", offsetsz);
 }
 
 // Accept a new connection on sockfd, and add it to epoll
