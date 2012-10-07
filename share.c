@@ -36,7 +36,7 @@
 #include <sys/epoll.h>
 
 #define DEFAULT_ADDRESS "127.0.0.1"
-#define DEFAULT_PORT 7500
+#define DEFAULT_PORT 8080
 #define DEFAULT_MIME_TYPE "text/plain"
 #define USAGE "USAGE: share [-h host] [-p port] [-m mime/type] <filename>\n"
 #define HEAD_TMPL "HTTP/1.0 200 OK\nContent-Type: %s\nContent-Length: %ld\n\n"
@@ -51,7 +51,6 @@ char buf[128];      // Buffer for consuming reads
 void swrite(int connfd, int datafd, int efd, off_t datasz) {
 
     if (offset[connfd] == 0) {
-        // Later: Set TCP CORK
         write(connfd, headers, strlen(headers));
     }
 
@@ -72,8 +71,9 @@ void swrite(int connfd, int datafd, int efd, off_t datasz) {
         // We're done writing.
         shutdown(connfd, SHUT_WR);
 
+        // Stop listening to EPOLLOUT
         struct epoll_event ev;
-        ev.events = EPOLLIN;  // Don't listen to EPOLLOUT
+        ev.events = EPOLLIN;
         ev.data.fd = connfd;
         if (epoll_ctl(efd, EPOLL_CTL_MOD, connfd, &ev) == -1) {
             error(EXIT_FAILURE, errno, "Error changing epoll descriptor");
