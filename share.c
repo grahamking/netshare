@@ -1,3 +1,17 @@
+/*
+ * Serve a single file quite fast.
+ *
+ * Run it:
+ *   share <myfile.txt>
+ *   OR
+ *   share -h example.com -p 80 -m text/html maintenance.html
+ *
+ * and point your browser (or wget / curl) at it.
+ * Default host / port is localhost:7500, mimetype text/plain.
+ *
+ * Copyright 2012 Graham King <graham@gkgk.org>
+ * GNU Public license <-- TO DO: add it
+ */
 
 #define _GNU_SOURCE
 
@@ -20,7 +34,11 @@
 
 #include <sys/epoll.h>
 
-#define HEAD_TMPL "HTTP/1.0 200 OK\nContent-Type: text/plain\nContent-Length: %ld\n\n"
+#define DEFAULT_ADDRESS "127.0.0.1"
+#define DEFAULT_PORT 7500
+#define DEFAULT_MIME_TYPE "text/plain"
+#define USAGE "USAGE: share [-h host] [-p port] [-m mime/type] <filename>\n"
+#define HEAD_TMPL "HTTP/1.0 200 OK\nContent-Type: %s\nContent-Length: %ld\n\n"
 
 off_t *offset;  // Stores current offset within data file at index's fd
 uint32_t offsetsz = 100;    // Size of 'offset'
@@ -261,58 +279,62 @@ int load_file(char *filename, off_t *datasz) {
 }
 
 // Parse command line arguments
-void parse_args(int argc, char **argv, int *port, char *mimetype, char *filename) {
+void parse_args(
+        int argc,
+        char **argv,
+        char **address,
+        int *port,
+        char **mimetype,
+        char **filename) {
 
     int ch;
-    while ((ch = getopt(argc, argv, "p:m:")) != -1) {
-
-        printf("%c\n", ch);
+    while ((ch = getopt(argc, argv, "h:p:m:")) != -1) {
 
         switch (ch) {
+            case 'h':
+                *address = optarg;
+                break;
             case 'p':
                 *port = atoi(optarg);
-                printf("%d\n", *port);
                 break;
             case 'm':
-                mimetype = optarg;
-                printf("%s\n", mimetype);
+                *mimetype = optarg;
                 break;
             case '?':
-                printf("USAGE: share [-p port] [-m mime/type]  <filename>\n");
+                printf(USAGE);
                 fprintf(stderr, "Unknown option character `\\x%x'.\n", optopt);
         }
     }
 
-    if (optind != argc - 1) {
-        printf("%d\n", optind);
-        printf("%d\n", argc);
-        printf("USAGE: share [-p port] [-m mime/type]  <filename>\n");
+    if (optind >= argc) {
+        fprintf(stderr, USAGE);
+        exit(EXIT_FAILURE);
     }
-    filename = argv[optind + 1];
-    printf("%s\n", filename);
+    *filename = argv[optind];
 }
 
 // Start here
 int main(int argc, char **argv) {
 
-    int port;
-    char *mimetype;
-    char *filename;
-    parse_args(argc, argv, &port, mimetype, filename);
+    int port = DEFAULT_PORT;
+    char *address = DEFAULT_ADDRESS;
+    char *mimetype = DEFAULT_MIME_TYPE;
+    char **filename = malloc(sizeof(char*));
+    parse_args(argc, argv, &address, &port, &mimetype, filename);
 
-    printf("Serving %s with mime type %s on port %d\n",
-            filename, mimetype, port);
+    printf("Serving %s with mime type %s on %s:%d\n",
+            *filename, mimetype, address, port);
 
     offset = malloc(sizeof(off_t) * offsetsz);
     memset(offset, 0, sizeof(off_t) * offsetsz);
 
-    int sockfd = start_sock("127.0.0.1", 4321);
+    int sockfd = start_sock(address, port);
 
     off_t datasz;
-    int datafd = load_file(filename, &datasz);
+    int datafd = load_file(*filename, &datasz);
 
     headers = malloc(strlen(HEAD_TMPL) + 12);
-    sprintf(headers, HEAD_TMPL, datasz);
+    sprintf(headers, HEAD_TMPL, mimetype, datasz);
 
     int efd = start_epoll(sockfd);
 
