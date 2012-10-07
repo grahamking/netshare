@@ -26,6 +26,7 @@
 
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <sys/sendfile.h>
 
@@ -134,6 +135,10 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
     if (connfd == -1) {
         error(EXIT_FAILURE, errno, "Error 'accept' on socket");
     }
+
+    // TCP_CORK means headers and first part of data will go in same TCP packet
+    int optval = 1;
+    setsockopt(connfd, IPPROTO_TCP, TCP_CORK, &optval, sizeof(optval));
 
     if (connfd >= offsetsz) {
         grow_offset();
