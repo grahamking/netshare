@@ -238,6 +238,27 @@ void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
     }
 }
 
+// Load the payload file, pre-fetch it, and return it's fd.
+// Second param datasz is output param, size of file in bytes.
+int load_file(char *filename, off_t *datasz) {
+
+    int datafd = open("payload.txt", O_RDONLY);
+    if (datafd == -1) {
+        error(EXIT_FAILURE, errno, "Error opening payload");
+    }
+
+    struct stat datastat;
+    fstat(datafd, &datastat);
+    *datasz = datastat.st_size; // Output param
+
+    int err = readahead(datafd, 0, *datasz);
+    if (err == -1) {
+        error(EXIT_FAILURE, errno, "Error readahead of data file");
+    }
+
+    return datafd;
+}
+
 // Start here
 int main(int argc, char **argv) {
 
@@ -246,13 +267,8 @@ int main(int argc, char **argv) {
 
     int sockfd = start_sock("127.0.0.1", 4321);
 
-    int datafd = open("payload.txt", O_RDONLY);
-    if (datafd == -1) {
-        error(EXIT_FAILURE, errno, "Error opening payload");
-    }
-    struct stat datastat;
-    fstat(datafd, &datastat);
-    off_t datasz = datastat.st_size;
+    off_t datasz;
+    int datafd = load_file("payload.txt", &datasz);
 
     headers = malloc(strlen(HEAD_TMPL) + 12);
     sprintf(headers, HEAD_TMPL, datasz);
