@@ -11,6 +11,11 @@
  *
  * Copyright 2012 Graham King <graham@gkgk.org>
  * GNU Public license <-- TO DO: add it
+ *  ---
+ *
+ *  On loopback can get ~ 7k requests / sec, with 8k jpeg.
+ *  Using ab -n 5000 -c 50 for tests.
+ *  Concurrency from 20 - 500 gets similar results
  */
 
 #define _GNU_SOURCE
