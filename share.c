@@ -242,8 +242,9 @@ void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
 // Second param datasz is output param, size of file in bytes.
 int load_file(char *filename, off_t *datasz) {
 
-    int datafd = open("payload.txt", O_RDONLY);
+    int datafd = open(filename, O_RDONLY);
     if (datafd == -1) {
+        printf("Attempted to read: '%s'\n", filename);
         error(EXIT_FAILURE, errno, "Error opening payload");
     }
 
@@ -259,8 +260,48 @@ int load_file(char *filename, off_t *datasz) {
     return datafd;
 }
 
+// Parse command line arguments
+void parse_args(int argc, char **argv, int *port, char *mimetype, char *filename) {
+
+    int ch;
+    while ((ch = getopt(argc, argv, "p:m:")) != -1) {
+
+        printf("%c\n", ch);
+
+        switch (ch) {
+            case 'p':
+                *port = atoi(optarg);
+                printf("%d\n", *port);
+                break;
+            case 'm':
+                mimetype = optarg;
+                printf("%s\n", mimetype);
+                break;
+            case '?':
+                printf("USAGE: share [-p port] [-m mime/type]  <filename>\n");
+                fprintf(stderr, "Unknown option character `\\x%x'.\n", optopt);
+        }
+    }
+
+    if (optind != argc - 1) {
+        printf("%d\n", optind);
+        printf("%d\n", argc);
+        printf("USAGE: share [-p port] [-m mime/type]  <filename>\n");
+    }
+    filename = argv[optind + 1];
+    printf("%s\n", filename);
+}
+
 // Start here
 int main(int argc, char **argv) {
+
+    int port;
+    char *mimetype;
+    char *filename;
+    parse_args(argc, argv, &port, mimetype, filename);
+
+    printf("Serving %s with mime type %s on port %d\n",
+            filename, mimetype, port);
 
     offset = malloc(sizeof(off_t) * offsetsz);
     memset(offset, 0, sizeof(off_t) * offsetsz);
@@ -268,7 +309,7 @@ int main(int argc, char **argv) {
     int sockfd = start_sock("127.0.0.1", 4321);
 
     off_t datasz;
-    int datafd = load_file("payload.txt", &datasz);
+    int datafd = load_file(filename, &datasz);
 
     headers = malloc(strlen(HEAD_TMPL) + 12);
     sprintf(headers, HEAD_TMPL, datasz);
