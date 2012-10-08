@@ -23,3 +23,6 @@ Files under 5M are served by stashing them in kernel pipes, files above that
 use sendfile. Feel free to tweak THRESHOLD - the limiting factor is open files.
 
 Linux only, recent kernel's (2.6.17+).
+
+BUGS:
+Will crash if too many concurrent hits.
