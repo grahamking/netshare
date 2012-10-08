@@ -48,12 +48,14 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
-#include <sys/sendfile.h>
 
+#include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <fcntl.h>
 
 #include <sys/epoll.h>
+#include <sys/uio.h>
+#include <sys/mman.h>
 
 #define DEFAULT_ADDRESS "127.0.0.1"
 #define DEFAULT_PORT 8080
@@ -343,11 +345,30 @@ int load_file(char *filename, off_t *datasz) {
 
 int preload(int datafd, off_t datasz) {
 
+    int total_payload = datasz + strlen(headers);
+    char *store = mmap(NULL, total_payload, PROT_READ | PROT_WRITE, MAP_ANONYMOUS, -1, 0);
+    if (*store == -1) {
+        error(EXIT_FAILURE, errno, "Error mmap");
+    }
+
+    memcpy(store, headers, strlen(headers));
+
+    char *mem_fd = mmap(NULL, datasz, PROT_READ, 0, datafd, datasz);
+    memcpy(store + strlen(headers), mem_fd, datasz);
+
     int pfd[2];
     if (pipe(pfd) == -1) {
         error(EXIT_FAILURE, errno, "Error creating pipe\n");
     }
 
+    struct iovec iov;
+    iov.iov_base = store;
+    iov.iov_len = total_payload;
+    if (vmsplice(pfd[1], &iov, 1, SPLICE_F_GIFT) == -1) {
+        error(EXIT_FAILURE, errno, "Error vmsplice");
+    }
+
+    /*
     if (write(pfd[1], headers, strlen(headers)) == -1) {
         error(0, errno, "Error writing headers to pipe\n");
     }
@@ -357,7 +378,7 @@ int preload(int datafd, off_t datasz) {
     if (num_spliced == -1) {
         error(EXIT_FAILURE, errno, "Error splicing file to pipe\n");
     }
-
+    */
     return pfd[0];
 }
 
@@ -417,7 +438,8 @@ int main(int argc, char **argv) {
     off_t datasz;
     int datafd = load_file(*filename, &datasz);
 
-    headers = malloc(strlen(HEAD_TMPL) + 12);
+    // 12 is for number of chars in content-length - allows up to 1 Gig
+    headers = malloc(strlen(HEAD_TMPL) + 12 + strlen(mimetype));
     sprintf(headers, HEAD_TMPL, mimetype, datasz);
 
     int pipefd = preload(datafd, datasz);
