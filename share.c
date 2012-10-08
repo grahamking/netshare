@@ -95,7 +95,10 @@ int swrite_pipe(int connfd, int efd, off_t datasz) {
 
     // Copy pipe so we don't consume it
     int pipefds[2];
-    pipe(pipefds);
+    if (pipe(pipefds) == -1) {
+        error(EXIT_FAILURE, errno, "Error creating tee pipe\n");
+    }
+
     if (tee(pipes[curr_index], pipefds[1], datasz, 0) == -1) {
         error(EXIT_FAILURE, errno, "Error on tee");
     }
@@ -432,7 +435,7 @@ void preload(int datafd, off_t datasz) {
 
         int pfd[2];
         if (pipe(pfd) == -1) {
-            error(EXIT_FAILURE, errno, "Error creating pipe\n");
+            error(EXIT_FAILURE, errno, "Error creating preload pipe\n");
         }
 
         struct iovec iov;
