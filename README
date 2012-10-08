@@ -1,0 +1,25 @@
+
+Serve a single file over the web, quite fast.
+
+Build:
+
+    gcc -Ofast -Wall share.c -o share
+
+Run:
+
+    # Serve on localhost:8080 with mime type text/plain
+    share test.txt
+
+    # Serve on 123.456.7.8:80 with mime text/html
+    share -h 123.456.7.8 -p 80 -m text/html maintenance.html
+
+    # Or port 8080 (default)  mime image/png
+    share -h 123.456.7.8 -m image/png come_back_later.png
+
+Note that this serves _only a single file_. If you serve HTML, all
+your media must be inline (base64 url's, for example).
+
+Files under 5M are served by stashing them in kernel pipes, files above that
+use sendfile. Feel free to tweak THRESHOLD - the limiting factor is open files.
+
+Linux only, recent kernel's (2.6.17+).
