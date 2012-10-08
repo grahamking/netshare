@@ -1,16 +1,13 @@
 /*
- * Serve a single file quite fast.
+ * Serve a single file over the web, quite fast.
  *
  * Run it:
  *   share <myfile.txt>
  *   OR
  *   share -h example.com -p 80 -m text/html maintenance.html
  *
- * and point your browser (or wget / curl) at it.
- * Default host / port is localhost:7500, mimetype text/plain.
+ * Default host / port is localhost:8080, mimetype text/plain.
  *
- * Copyright 2012 Graham King <graham@gkgk.org>
- * GNU Public license <-- TO DO: add it
  * ---
  *
  * On loopback with 8k jpeg can get:
@@ -19,6 +16,23 @@
  * Using ab -n 5000 -c 50 for tests.
  * Concurrency from 20 - 500 gets similar results
  *
+ */
+
+/*
+ * Copyright 2012 Graham King <graham@gkgk.org>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #define _GNU_SOURCE
