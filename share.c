@@ -13,24 +13,12 @@
  * GNU Public license <-- TO DO: add it
  * ---
  *
- * On loopback can get ~ 7k requests / sec, with 8k jpeg.
+ * On loopback with 8k jpeg can get:
+ *  - splice: ~ 9k requests / sec
+ *  - sendfile: ~ 7k requests / sec
  * Using ab -n 5000 -c 50 for tests.
  * Concurrency from 20 - 500 gets similar results
  *
- * ---
- *
- * splice ideas:
- *
- * init:
- *   mmap to get page aligned memory.
- *   Write headers there. Load entire file there.
- *   vmsplice gift pages to kernel.
- *
- * on accept:
- *   tee the pipe and cache it
- * on swrite:
- *   splice pipe to socket
- *   pipe maintains it's own position, no offset needed
  */
 
 #define _GNU_SOURCE
@@ -63,21 +51,30 @@
 #define USAGE "USAGE: share [-h host] [-p port] [-m mime/type] <filename>\n"
 #define HEAD_TMPL "HTTP/1.0 200 OK\nContent-Type: %s\nContent-Length: %ld\n\n"
 
+// Max bytes a Linux pipe can hold
 #define PIPE_SIZE (64 * 1024)
 
-//loff_t *offset;  // Stores current offset within data file at index's fd
-//uint32_t offsetsz = 100;    // Size of 'offset'
-
-int *pipes;             // Kernel pipes we put payload into
-int num_pipes = 0;      // Length of 'pipes' array
-
-int *pipe_index;            // index = fd, val = pipes index number that fd is at
-int pipe_index_sz = 100;    // Number of active connections
+// Smaller files are loaded in kernel pipes. Bigger files use sendfile.
+#define MEGABYTES (1024 * 1024)
+#define THRESHOLD (5 * MEGABYTES)
 
 char *headers;      // HTTP headers
 
-// Write to socket
-void swrite(int connfd, int efd, off_t datasz) {
+// Used by sendfile case
+off_t *offset;              // Current offset within data file at index's fd
+uint32_t offsetsz = 100;    // Size of 'offset'
+
+// Used by pipe case
+int *pipes;                 // Kernel pipes we put payload into
+int num_pipes = 0;          // Length of 'pipes' array
+int *pipe_index;            // index = fd, val = pipes index number that fd is at
+int pipe_index_sz = 100;    // Number of active connections
+
+int is_pipe = 0;        // Are we using pipes? Otherwise sendfile.
+
+// Write to socket using pipes.
+// Return 1 if we're done writing, 0 if more needed.
+int swrite_pipe(int connfd, int efd, off_t datasz) {
 
     int curr_index = pipe_index[connfd]++;
     //printf("connfd: %d, curr_index: %d, num_pipes: %d\n", connfd, curr_index, num_pipes);
@@ -102,33 +99,25 @@ void swrite(int connfd, int efd, off_t datasz) {
 
     if (num_wrote == -1) {
         if (errno == EAGAIN || errno == ECONNRESET) {
-            // No data or client closed connection.
-            // epoll will tell us the next step
+            // No data or client closed connection. epoll will tell us next step.
             //printf("EAGAIN\n");
-            return;
+            return 0;
         }
         error(EXIT_FAILURE, errno, "Error splicing out to socket");
     }
 
-    //offset[connfd] += num_wrote;
     close(pipefd);
 
     if (curr_index == num_pipes - 1) {
-        // We're done writing.
-        shutdown(connfd, SHUT_WR);
-
-        // Stop listening to EPOLLOUT. Only waiting for HUP now.
-        struct epoll_event ev;
-        ev.events = EPOLLIN;
-        ev.data.fd = connfd;
-        if (epoll_ctl(efd, EPOLL_CTL_MOD, connfd, &ev) == -1) {
-            error(EXIT_FAILURE, errno, "Error changing epoll descriptor");
-        }
+        return 1;
     }
 
+    return 0;
 }
-/*
-void swrite(int connfd, int datafd, int efd, off_t datasz) {
+
+// Write to socket using sendfile
+// Return 1 if we're done writing, 0 if more is needed.
+int swrite_sendfile(int connfd, int efd, int datafd, off_t datasz) {
 
     if (offset[connfd] == 0) {
         if ( write(connfd, headers, strlen(headers)) == -1 ) {
@@ -139,9 +128,8 @@ void swrite(int connfd, int datafd, int efd, off_t datasz) {
     ssize_t num_wrote = sendfile(connfd, datafd, &offset[connfd], datasz - offset[connfd]);
     if (num_wrote == -1) {
         if (errno == EAGAIN || errno == ECONNRESET) {
-            // No data or client closed connection.
-            // epoll will tell us the next step
-            return;
+            // No data or client closed connection. epoll will tell us next step.
+            return 0;
         }
 
         error(EXIT_FAILURE, errno, "Error senfile");
@@ -150,25 +138,20 @@ void swrite(int connfd, int datafd, int efd, off_t datasz) {
     //printf("%d: Wrote total %ld / %ld bytes\n", connfd, offset[connfd], datasz);
 
     if (offset[connfd] >= datasz) {
-        // We're done writing.
-        shutdown(connfd, SHUT_WR);
-
-        // Stop listening to EPOLLOUT. Only waiting for HUP now.
-        struct epoll_event ev;
-        ev.events = EPOLLIN;
-        ev.data.fd = connfd;
-        if (epoll_ctl(efd, EPOLL_CTL_MOD, connfd, &ev) == -1) {
-            error(EXIT_FAILURE, errno, "Error changing epoll descriptor");
-        }
+        return 1;
     }
+
+    return 0;
 }
-*/
 
 // Close socket
 void sclose(int connfd) {
 
-    //offset[connfd] = 0;
-    pipe_index[connfd] = 0;
+    if (is_pipe) {
+        pipe_index[connfd] = 0;
+    } else {
+        offset[connfd] = 0;
+    }
 
     if (close(connfd) == -1) {      // close also removes it from epoll
         error(EXIT_FAILURE, errno, "Error closing connfd");
@@ -176,12 +159,11 @@ void sclose(int connfd) {
 }
 
 // Increase size of offset storage
-/*
 void grow_offset() {
 
-    int offtsz = sizeof(loff_t);
-    loff_t *old_offset = offset;
-    loff_t *new_offset = malloc(offtsz * offsetsz * 2);
+    int offtsz = sizeof(off_t);
+    off_t *old_offset = offset;
+    off_t *new_offset = malloc(offtsz * offsetsz * 2);
     memset(new_offset, 0, offtsz * offsetsz * 2);
 
     memcpy(new_offset, old_offset, offtsz * offsetsz);
@@ -191,7 +173,6 @@ void grow_offset() {
 
     offsetsz *= 2;
 }
-*/
 
 // Increase the size of pipe index storage
 void grow_pipe_index() {
@@ -221,17 +202,17 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
     }
 
     // TCP_CORK means headers and first part of data will go in same TCP packet
-    //int optval = 1;
-    //setsockopt(connfd, IPPROTO_TCP, TCP_CORK, &optval, sizeof(optval));
-
-    /*
-    if (connfd >= offsetsz) {
-        grow_offset();
+    // Only needed for sendfile case
+    if (is_pipe == 0) {
+        int optval = 1;
+        setsockopt(connfd, IPPROTO_TCP, TCP_CORK, &optval, sizeof(optval));
     }
-    */
-    if (connfd >= pipe_index_sz) {
-        //printf("Growing. connfd: %d, pipe_index_sz: %d\n", connfd, pipe_index_sz);
+
+    if (is_pipe && connfd >= pipe_index_sz) {
         grow_pipe_index();
+    }
+    else if (connfd >= offsetsz) {
+        grow_offset();
     }
 
     evp->events = EPOLLOUT;
@@ -243,14 +224,27 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
     return connfd;
 }
 
+// We're done writing.
+// Shutdown our site of connfd connection, and stop epoll-ing it for out ready.
+void shut(int connfd, int efd) {
+
+    shutdown(connfd, SHUT_WR);
+
+    // Stop listening to EPOLLOUT. Only waiting for HUP now.
+    struct epoll_event ev;
+    ev.events = EPOLLIN;
+    ev.data.fd = connfd;
+    if (epoll_ctl(efd, EPOLL_CTL_MOD, connfd, &ev) == -1) {
+        error(EXIT_FAILURE, errno, "Error changing epoll descriptor");
+    }
+}
+
 // Process an epoll event
 void do_event(
-        struct epoll_event *evp,
-        int sockfd,
-        int efd,
-        off_t datasz) {
+    struct epoll_event *evp, int sockfd, int efd, int datafd, off_t datasz) {
 
     int connfd = -1;
+    int done = 0;        // Are we done writing?
 
     //printf("Is ready: %d\n", evp->data.fd);
     if (evp->data.fd == sockfd) {
@@ -261,7 +255,17 @@ void do_event(
         //printf("Events: %d\n", evp->events);
 
         if (evp->events & EPOLLOUT) {
-            swrite(connfd, efd, datasz);
+
+            if (is_pipe) {
+                done = swrite_pipe(connfd, efd, datasz);
+            } else {
+                done = swrite_sendfile(connfd, efd, datafd, datasz);
+            }
+
+            if (done) {
+                shut(connfd, efd);
+            }
+
         }
 
         if (evp->events & EPOLLHUP) {
@@ -333,7 +337,7 @@ int start_epoll(int sockfd) {
 }
 
 // Wait for epoll events and act on them
-void main_loop(int efd, int sockfd, off_t datasz) {
+void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
 
     int i;
     int num_ready;
@@ -347,7 +351,7 @@ void main_loop(int efd, int sockfd, off_t datasz) {
         }
 
         for (i = 0; i < num_ready; i++) {
-            do_event(&events[i], sockfd, efd, datasz);
+            do_event(&events[i], sockfd, efd, datafd, datasz);
         }
     }
 }
@@ -366,12 +370,9 @@ int load_file(char *filename, off_t *datasz) {
     fstat(datafd, &datastat);
     *datasz = datastat.st_size; // Output param
 
-    /*
-    int err = readahead(datafd, 0, *datasz);
-    if (err == -1) {
+    if (readahead(datafd, 0, *datasz) == -1) {
         error(EXIT_FAILURE, errno, "Error readahead of data file");
     }
-    */
 
     return datafd;
 }
@@ -483,26 +484,42 @@ int main(int argc, char **argv) {
     printf("Serving %s with mime type %s on %s:%d\n",
             *filename, mimetype, address, port);
 
-    //offset = malloc(sizeof(loff_t) * offsetsz);
-    //memset(offset, 0, sizeof(loff_t) * offsetsz);
-
-    pipe_index = malloc(sizeof(int) * pipe_index_sz);
-    memset(pipe_index, 0, 100);
-
-    int sockfd = start_sock(address, port);
-
     off_t datasz;
     int datafd = load_file(*filename, &datasz);
 
-    // 12 is for number of chars in content-length - allows up to 1 Gig
+    int sockfd = start_sock(address, port);
+
+    // 12 is for number of chars in content-length
+    // Allows max "999999999999" bytes, i.e 1 Gig
     headers = malloc(strlen(HEAD_TMPL) + 12 + strlen(mimetype));
     sprintf(headers, HEAD_TMPL, mimetype, datasz);
 
-    preload(datafd, datasz);
+    int transmit_sz;    // How much data to send to clients
+
+    if (datasz < THRESHOLD) {
+        printf("Serving with kernel pipes\n");
+        is_pipe = 1;
+
+        pipe_index = malloc(sizeof(int) * pipe_index_sz);
+        memset(pipe_index, 0, 100);
+
+        preload(datafd, datasz);
+
+        transmit_sz = datasz + strlen(headers);
+
+    } else {
+        printf("Serving with sendfile\n");
+        is_pipe = 0;
+
+        offset = malloc(sizeof(off_t) * offsetsz);
+        memset(offset, 0, sizeof(off_t) * offsetsz);
+
+        transmit_sz = datasz;
+    }
 
     int efd = start_epoll(sockfd);
 
-    main_loop(efd, sockfd, datasz + strlen(headers));
+    main_loop(efd, sockfd, datafd, transmit_sz);
 
     int err = close(datafd);
     if (err == -1) {
