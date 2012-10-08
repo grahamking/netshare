@@ -65,14 +65,14 @@
 
 #define PIPE_SIZE (64 * 1024)
 
-loff_t *offset;  // Stores current offset within data file at index's fd
-uint32_t offsetsz = 100;    // Size of 'offset'
+//loff_t *offset;  // Stores current offset within data file at index's fd
+//uint32_t offsetsz = 100;    // Size of 'offset'
 
-int *pipes;         // Kernel pipes we stuffed are data into
+int *pipes;             // Kernel pipes we put payload into
 int num_pipes = 0;      // Length of 'pipes' array
 
-int *pipe_index;    // index = fd, val = pipes index number that fd is at
-int pipe_index_sz = 100;  // Number of active connections
+int *pipe_index;            // index = fd, val = pipes index number that fd is at
+int pipe_index_sz = 100;    // Number of active connections
 
 char *headers;      // HTTP headers
 
@@ -80,7 +80,7 @@ char *headers;      // HTTP headers
 void swrite(int connfd, int efd, off_t datasz) {
 
     int curr_index = pipe_index[connfd]++;
-    printf("connfd: %d, curr_index: %d, num_pipes: %d\n", connfd, curr_index, num_pipes);
+    //printf("connfd: %d, curr_index: %d, num_pipes: %d\n", connfd, curr_index, num_pipes);
 
     // Copy pipe so we don't consume it
     int pipefds[2];
@@ -88,6 +88,7 @@ void swrite(int connfd, int efd, off_t datasz) {
     if (tee(pipes[curr_index], pipefds[1], datasz, 0) == -1) {
         error(EXIT_FAILURE, errno, "Error on tee");
     }
+    close(pipefds[1]);
 
     int pipefd = pipefds[0];
 
@@ -109,9 +110,10 @@ void swrite(int connfd, int efd, off_t datasz) {
         error(EXIT_FAILURE, errno, "Error splicing out to socket");
     }
 
-    offset[connfd] += num_wrote;
+    //offset[connfd] += num_wrote;
+    close(pipefd);
 
-    if (offset[connfd] >= datasz) {
+    if (curr_index == num_pipes - 1) {
         // We're done writing.
         shutdown(connfd, SHUT_WR);
 
@@ -165,8 +167,7 @@ void swrite(int connfd, int datafd, int efd, off_t datasz) {
 // Close socket
 void sclose(int connfd) {
 
-    //printf("Closing %d\n", connfd);
-    offset[connfd] = 0;
+    //offset[connfd] = 0;
     pipe_index[connfd] = 0;
 
     if (close(connfd) == -1) {      // close also removes it from epoll
@@ -175,6 +176,7 @@ void sclose(int connfd) {
 }
 
 // Increase size of offset storage
+/*
 void grow_offset() {
 
     int offtsz = sizeof(loff_t);
@@ -189,6 +191,7 @@ void grow_offset() {
 
     offsetsz *= 2;
 }
+*/
 
 // Increase the size of pipe index storage
 void grow_pipe_index() {
@@ -196,7 +199,7 @@ void grow_pipe_index() {
     int new_pipe_index_sz = pipe_index_sz * 2;
 
     int *old_pi = pipe_index;
-    int *new_pi = malloc(new_pipe_index_sz);
+    int *new_pi = malloc(sizeof(int) * new_pipe_index_sz);
     memset(new_pi, 0, new_pipe_index_sz);
 
     memcpy(new_pi, old_pi, pipe_index_sz);
@@ -218,16 +221,17 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
     }
 
     // TCP_CORK means headers and first part of data will go in same TCP packet
-    int optval = 1;
-    setsockopt(connfd, IPPROTO_TCP, TCP_CORK, &optval, sizeof(optval));
+    //int optval = 1;
+    //setsockopt(connfd, IPPROTO_TCP, TCP_CORK, &optval, sizeof(optval));
 
+    /*
     if (connfd >= offsetsz) {
         grow_offset();
     }
+    */
     if (connfd >= pipe_index_sz) {
-        printf("Growing. connfd: %d, pipe_index_sz: %d\n", connfd, pipe_index_sz);
+        //printf("Growing. connfd: %d, pipe_index_sz: %d\n", connfd, pipe_index_sz);
         grow_pipe_index();
-        printf("pipe_index_sz now: %d\n", pipe_index_sz);
     }
 
     evp->events = EPOLLOUT;
@@ -403,9 +407,7 @@ void preload(int datafd, off_t datasz) {
     }
     memcpy(store + strlen(headers), mem_fd, datasz);
 
-    printf("total_payload: %d, PIPE_SIZE: %d\n", total_payload, PIPE_SIZE);
     num_pipes = (int) total_payload / PIPE_SIZE + 1;
-    printf("num_pipes: %d\n", num_pipes);
     pipes = malloc(sizeof(int) * num_pipes);
     memset(pipes, 0, sizeof(pipes));
 
@@ -425,7 +427,7 @@ void preload(int datafd, off_t datasz) {
         if (bytes_spliced == -1) {
             error(EXIT_FAILURE, errno, "Error vmsplice");
         }
-        printf("Spliced %d bytes to kernel pipe\n", bytes_spliced);
+        close(pfd[1]);
 
         total_spliced += bytes_spliced;
 
@@ -481,8 +483,8 @@ int main(int argc, char **argv) {
     printf("Serving %s with mime type %s on %s:%d\n",
             *filename, mimetype, address, port);
 
-    offset = malloc(sizeof(loff_t) * offsetsz);
-    memset(offset, 0, sizeof(loff_t) * offsetsz);
+    //offset = malloc(sizeof(loff_t) * offsetsz);
+    //memset(offset, 0, sizeof(loff_t) * offsetsz);
 
     pipe_index = malloc(sizeof(int) * pipe_index_sz);
     memset(pipe_index, 0, 100);
