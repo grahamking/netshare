@@ -71,6 +71,7 @@ char *headers;      // HTTP headers
 
 // Write to socket
 void swrite(int connfd, int orig_pipefd, int efd, off_t datasz) {
+
     if (offset[connfd] == 0) {
         printf("Creating pipe\n");
         // Copy pipe so we don't consume it
@@ -79,9 +80,23 @@ void swrite(int connfd, int orig_pipefd, int efd, off_t datasz) {
         if (tee(orig_pipefd, pipefds[1], datasz, 0) == -1) {
             error(EXIT_FAILURE, errno, "Error on tee");
         }
+        printf("'Copied' %ld from orig pipe to new pipe\n", datasz);
         pipes[connfd] = pipefds[0];
     }
     int pipefd = pipes[connfd];
+
+    char byte;
+    int count = 0;
+    while(read(pipefd, &byte, 1) == 1) {
+        count++;
+        printf("%c", byte);
+    }
+    printf("\ncount: %d\n", count);
+
+    /*
+    printf("Asking to splice: %lld\n", datasz - offset[connfd]);
+    ssize_t num_wrote = splice(pipefd, 0, 2, 0, datasz - offset[connfd], 0);
+    printf("Splice done\n");
 
     ssize_t num_wrote = splice(
             pipefd,
@@ -89,7 +104,8 @@ void swrite(int connfd, int orig_pipefd, int efd, off_t datasz) {
             connfd,
             0,
             datasz - offset[connfd],
-            SPLICE_F_NONBLOCK);
+            0);
+            //SPLICE_F_NONBLOCK);
 
     if (num_wrote == -1) {
         if (errno == EAGAIN || errno == ECONNRESET) {
@@ -103,6 +119,8 @@ void swrite(int connfd, int orig_pipefd, int efd, off_t datasz) {
     printf("num_wrote: %d\n", num_wrote);
 
     offset[connfd] += num_wrote;
+    printf("Offset now: %lld\n", offset[connfd]);
+
     if (offset[connfd] >= datasz) {
         // We're done writing.
         printf("Shutdown\n");
@@ -116,6 +134,7 @@ void swrite(int connfd, int orig_pipefd, int efd, off_t datasz) {
             error(EXIT_FAILURE, errno, "Error changing epoll descriptor");
         }
     }
+    */
 
 }
 /*
@@ -343,17 +362,35 @@ int load_file(char *filename, off_t *datasz) {
     return datafd;
 }
 
+// Return next biggest page multiple after initial.
+size_t page_multiple(size_t initial) {
+
+    int page_size = sysconf(_SC_PAGESIZE);
+    if (initial < page_size) {
+        return page_size;
+    } else {
+        int pages = (int) (initial / page_size);
+        return page_size * (pages + 1);
+    }
+}
+
+// Store headers + data file in a kernel buffer. Return pipe fd to that buffer.
 int preload(int datafd, off_t datasz) {
 
     int total_payload = datasz + strlen(headers);
-    char *store = mmap(NULL, total_payload, PROT_READ | PROT_WRITE, MAP_ANONYMOUS, -1, 0);
-    if (*store == -1) {
-        error(EXIT_FAILURE, errno, "Error mmap");
+    int page_align = page_multiple(total_payload);
+
+    char *store = mmap(NULL, page_align, PROT_READ|PROT_WRITE, MAP_ANON|MAP_PRIVATE, -1, 0);
+    if (store == MAP_FAILED) {
+        error(EXIT_FAILURE, errno, "Error mmap storage area");
     }
 
     memcpy(store, headers, strlen(headers));
 
-    char *mem_fd = mmap(NULL, datasz, PROT_READ, 0, datafd, datasz);
+    char *mem_fd = mmap(NULL, datasz, PROT_READ, MAP_PRIVATE, datafd, 0);
+    if (mem_fd == MAP_FAILED) {
+        error(EXIT_FAILURE, errno, "Error mmap of data file");
+    }
     memcpy(store + strlen(headers), mem_fd, datasz);
 
     int pfd[2];
@@ -363,10 +400,12 @@ int preload(int datafd, off_t datasz) {
 
     struct iovec iov;
     iov.iov_base = store;
-    iov.iov_len = total_payload;
-    if (vmsplice(pfd[1], &iov, 1, SPLICE_F_GIFT) == -1) {
+    iov.iov_len = page_align;
+    ssize_t bytes_spliced = vmsplice(pfd[1], &iov, 1, SPLICE_F_GIFT);
+    if (bytes_spliced == -1) {
         error(EXIT_FAILURE, errno, "Error vmsplice");
     }
+    printf("Spliced %d bytes to kernel pipe\n", bytes_spliced);
 
     /*
     if (write(pfd[1], headers, strlen(headers)) == -1) {
