@@ -63,49 +63,41 @@
 #define USAGE "USAGE: share [-h host] [-p port] [-m mime/type] <filename>\n"
 #define HEAD_TMPL "HTTP/1.0 200 OK\nContent-Type: %s\nContent-Length: %ld\n\n"
 
+#define PIPE_SIZE (64 * 1024)
+
 loff_t *offset;  // Stores current offset within data file at index's fd
 uint32_t offsetsz = 100;    // Size of 'offset'
-int pipes[100];
+
+int *pipes;         // Kernel pipes we stuffed are data into
+int num_pipes = 0;      // Length of 'pipes' array
+
+int *pipe_index;    // index = fd, val = pipes index number that fd is at
+int pipe_index_sz = 100;  // Number of active connections
 
 char *headers;      // HTTP headers
 
 // Write to socket
-void swrite(int connfd, int orig_pipefd, int efd, off_t datasz) {
+void swrite(int connfd, int efd, off_t datasz) {
 
-    if (offset[connfd] == 0) {
-        printf("Creating pipe\n");
-        // Copy pipe so we don't consume it
-        int pipefds[2];
-        pipe(pipefds);
-        if (tee(orig_pipefd, pipefds[1], datasz, 0) == -1) {
-            error(EXIT_FAILURE, errno, "Error on tee");
-        }
-        printf("'Copied' %ld from orig pipe to new pipe\n", datasz);
-        pipes[connfd] = pipefds[0];
+    int curr_index = pipe_index[connfd]++;
+    printf("connfd: %d, curr_index: %d, num_pipes: %d\n", connfd, curr_index, num_pipes);
+
+    // Copy pipe so we don't consume it
+    int pipefds[2];
+    pipe(pipefds);
+    if (tee(pipes[curr_index], pipefds[1], datasz, 0) == -1) {
+        error(EXIT_FAILURE, errno, "Error on tee");
     }
-    int pipefd = pipes[connfd];
 
-    char byte;
-    int count = 0;
-    while(read(pipefd, &byte, 1) == 1) {
-        count++;
-        printf("%c", byte);
-    }
-    printf("\ncount: %d\n", count);
-
-    /*
-    printf("Asking to splice: %lld\n", datasz - offset[connfd]);
-    ssize_t num_wrote = splice(pipefd, 0, 2, 0, datasz - offset[connfd], 0);
-    printf("Splice done\n");
+    int pipefd = pipefds[0];
 
     ssize_t num_wrote = splice(
             pipefd,
             0,
             connfd,
             0,
-            datasz - offset[connfd],
-            0);
-            //SPLICE_F_NONBLOCK);
+            PIPE_SIZE,
+            SPLICE_F_NONBLOCK);
 
     if (num_wrote == -1) {
         if (errno == EAGAIN || errno == ECONNRESET) {
@@ -116,14 +108,11 @@ void swrite(int connfd, int orig_pipefd, int efd, off_t datasz) {
         }
         error(EXIT_FAILURE, errno, "Error splicing out to socket");
     }
-    printf("num_wrote: %d\n", num_wrote);
 
     offset[connfd] += num_wrote;
-    printf("Offset now: %lld\n", offset[connfd]);
 
     if (offset[connfd] >= datasz) {
         // We're done writing.
-        printf("Shutdown\n");
         shutdown(connfd, SHUT_WR);
 
         // Stop listening to EPOLLOUT. Only waiting for HUP now.
@@ -134,7 +123,6 @@ void swrite(int connfd, int orig_pipefd, int efd, off_t datasz) {
             error(EXIT_FAILURE, errno, "Error changing epoll descriptor");
         }
     }
-    */
 
 }
 /*
@@ -179,6 +167,7 @@ void sclose(int connfd) {
 
     //printf("Closing %d\n", connfd);
     offset[connfd] = 0;
+    pipe_index[connfd] = 0;
 
     if (close(connfd) == -1) {      // close also removes it from epoll
         error(EXIT_FAILURE, errno, "Error closing connfd");
@@ -201,6 +190,23 @@ void grow_offset() {
     offsetsz *= 2;
 }
 
+// Increase the size of pipe index storage
+void grow_pipe_index() {
+
+    int new_pipe_index_sz = pipe_index_sz * 2;
+
+    int *old_pi = pipe_index;
+    int *new_pi = malloc(new_pipe_index_sz);
+    memset(new_pi, 0, new_pipe_index_sz);
+
+    memcpy(new_pi, old_pi, pipe_index_sz);
+
+    pipe_index = new_pi;
+    free(old_pi);
+
+    pipe_index_sz = new_pipe_index_sz;
+}
+
 // Accept a new connection on sockfd, and add it to epoll
 // We re-used the epoll_event to save allocating a new one each time on
 // the stack. I _think_ that's a good idea.
@@ -218,6 +224,11 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
     if (connfd >= offsetsz) {
         grow_offset();
     }
+    if (connfd >= pipe_index_sz) {
+        printf("Growing. connfd: %d, pipe_index_sz: %d\n", connfd, pipe_index_sz);
+        grow_pipe_index();
+        printf("pipe_index_sz now: %d\n", pipe_index_sz);
+    }
 
     evp->events = EPOLLOUT;
     evp->data.fd = connfd;
@@ -232,7 +243,6 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
 void do_event(
         struct epoll_event *evp,
         int sockfd,
-        int pipefd,
         int efd,
         off_t datasz) {
 
@@ -247,7 +257,7 @@ void do_event(
         //printf("Events: %d\n", evp->events);
 
         if (evp->events & EPOLLOUT) {
-            swrite(connfd, pipefd, efd, datasz);
+            swrite(connfd, efd, datasz);
         }
 
         if (evp->events & EPOLLHUP) {
@@ -319,7 +329,7 @@ int start_epoll(int sockfd) {
 }
 
 // Wait for epoll events and act on them
-void main_loop(int efd, int sockfd, int pipefd, off_t datasz) {
+void main_loop(int efd, int sockfd, off_t datasz) {
 
     int i;
     int num_ready;
@@ -333,7 +343,7 @@ void main_loop(int efd, int sockfd, int pipefd, off_t datasz) {
         }
 
         for (i = 0; i < num_ready; i++) {
-            do_event(&events[i], sockfd, pipefd, efd, datasz);
+            do_event(&events[i], sockfd, efd, datasz);
         }
     }
 }
@@ -374,8 +384,8 @@ size_t page_multiple(size_t initial) {
     }
 }
 
-// Store headers + data file in a kernel buffer. Return pipe fd to that buffer.
-int preload(int datafd, off_t datasz) {
+// Store headers + data file in kernel pipes, int 'pipes' global array.
+void preload(int datafd, off_t datasz) {
 
     int total_payload = datasz + strlen(headers);
     int page_align = page_multiple(total_payload);
@@ -393,32 +403,35 @@ int preload(int datafd, off_t datasz) {
     }
     memcpy(store + strlen(headers), mem_fd, datasz);
 
-    int pfd[2];
-    if (pipe(pfd) == -1) {
-        error(EXIT_FAILURE, errno, "Error creating pipe\n");
+    printf("total_payload: %d, PIPE_SIZE: %d\n", total_payload, PIPE_SIZE);
+    num_pipes = (int) total_payload / PIPE_SIZE + 1;
+    printf("num_pipes: %d\n", num_pipes);
+    pipes = malloc(sizeof(int) * num_pipes);
+    memset(pipes, 0, sizeof(pipes));
+
+    int total_spliced = 0;
+    int next_pipe = 0;
+    while (total_spliced < total_payload) {
+
+        int pfd[2];
+        if (pipe(pfd) == -1) {
+            error(EXIT_FAILURE, errno, "Error creating pipe\n");
+        }
+
+        struct iovec iov;
+        iov.iov_base = store + total_spliced;
+        iov.iov_len = page_align - total_spliced;
+        ssize_t bytes_spliced = vmsplice(pfd[1], &iov, 1, SPLICE_F_GIFT);
+        if (bytes_spliced == -1) {
+            error(EXIT_FAILURE, errno, "Error vmsplice");
+        }
+        printf("Spliced %d bytes to kernel pipe\n", bytes_spliced);
+
+        total_spliced += bytes_spliced;
+
+        pipes[next_pipe++] = pfd[0];
     }
 
-    struct iovec iov;
-    iov.iov_base = store;
-    iov.iov_len = page_align;
-    ssize_t bytes_spliced = vmsplice(pfd[1], &iov, 1, SPLICE_F_GIFT);
-    if (bytes_spliced == -1) {
-        error(EXIT_FAILURE, errno, "Error vmsplice");
-    }
-    printf("Spliced %d bytes to kernel pipe\n", bytes_spliced);
-
-    /*
-    if (write(pfd[1], headers, strlen(headers)) == -1) {
-        error(0, errno, "Error writing headers to pipe\n");
-    }
-
-    ssize_t num_spliced = splice(datafd, 0, pfd[1], 0, datasz, 0);
-    printf("Loaded %d\n", num_spliced);
-    if (num_spliced == -1) {
-        error(EXIT_FAILURE, errno, "Error splicing file to pipe\n");
-    }
-    */
-    return pfd[0];
 }
 
 // Parse command line arguments
@@ -470,7 +483,9 @@ int main(int argc, char **argv) {
 
     offset = malloc(sizeof(loff_t) * offsetsz);
     memset(offset, 0, sizeof(loff_t) * offsetsz);
-    memset(pipes, 0, 100);
+
+    pipe_index = malloc(sizeof(int) * pipe_index_sz);
+    memset(pipe_index, 0, 100);
 
     int sockfd = start_sock(address, port);
 
@@ -481,11 +496,11 @@ int main(int argc, char **argv) {
     headers = malloc(strlen(HEAD_TMPL) + 12 + strlen(mimetype));
     sprintf(headers, HEAD_TMPL, mimetype, datasz);
 
-    int pipefd = preload(datafd, datasz);
+    preload(datafd, datasz);
 
     int efd = start_epoll(sockfd);
 
-    main_loop(efd, sockfd, pipefd, datasz + strlen(headers));
+    main_loop(efd, sockfd, datasz + strlen(headers));
 
     int err = close(datafd);
     if (err == -1) {

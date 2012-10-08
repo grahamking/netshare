@@ -4,7 +4,7 @@ import sys
 import socket
 import time
 
-f = urlopen("http://localhost:4321")
+f = urlopen("http://localhost:8080")
 try:
     while True:
         try:
