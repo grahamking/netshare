@@ -49,7 +49,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+
 #include <arpa/inet.h>
+#include <netdb.h>
 
 #include <sys/sendfile.h>
 #include <sys/stat.h>
@@ -291,11 +293,43 @@ void do_event(
     }
 }
 
+// Convert domain name to IP address, if needed
+char *as_numeric(char *address) {
+
+    if (0x30 <= address[0] && address[0] < 0x3a) {
+        // Already numeric
+        return address;
+    }
+
+    struct addrinfo hints;
+    struct addrinfo *result;
+
+    memset(&hints, 0, sizeof(struct addrinfo));
+    hints.ai_family = AF_UNSPEC;    /* Allow IPv4 or IPv6 */
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;    /* For wildcard IP address */
+    hints.ai_protocol = 0;          /* Any protocol */
+
+    int err = getaddrinfo(address, NULL, &hints, &result);
+    if (err < 0) {
+        printf("getaddrinfo: %s\n", gai_strerror(err));
+        error(EXIT_FAILURE, 0, "Error converting domain name to IP address\n");
+    }
+
+    // Result can be several addrinfo records, we use the first
+    struct sockaddr_in* saddr = (struct sockaddr_in*)result->ai_addr;
+    char *ip_address = inet_ntoa(saddr->sin_addr);
+
+    freeaddrinfo(result);
+
+    return ip_address;
+}
+
 // Open the socket and listen on it. Returns the sockets fd.
 int start_sock(char *address, int port) {
 
-    struct in_addr localhost;
-    struct sockaddr_in addr;
+    struct in_addr iaddr;
+    struct sockaddr_in saddr;
 
     int sockfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (sockfd == -1) {
@@ -307,18 +341,21 @@ int start_sock(char *address, int port) {
         error(EXIT_FAILURE, errno, "Error setting SO_REUSEADDR on socket");
     }
 
-    memset(&localhost, 0, sizeof(struct in_addr));
-    int err = inet_pton(AF_INET, address, &localhost);
+    address = as_numeric(address);
+    printf("Listening on: %s:%d\n", address, port);
+
+    memset(&iaddr, 0, sizeof(struct in_addr));
+    int err = inet_pton(AF_INET, address, &iaddr);
     if (err != 1) {
         error(EXIT_FAILURE, errno, "Error converting address to network format");
     }
 
-    memset(&addr, 0, sizeof(struct sockaddr_in));
-    addr.sin_family = AF_INET;
-    addr.sin_port = htons(port);
-    addr.sin_addr = localhost;
+    memset(&saddr, 0, sizeof(struct sockaddr_in));
+    saddr.sin_family = AF_INET;
+    saddr.sin_port = htons(port);
+    saddr.sin_addr = iaddr;
 
-    err = bind(sockfd, (struct sockaddr *) &addr, sizeof(struct sockaddr_in));
+    err = bind(sockfd, (struct sockaddr *) &saddr, sizeof(struct sockaddr_in));
     if (err == -1) {
         error(EXIT_FAILURE, errno, "Error binding socket");
     }
@@ -498,8 +535,7 @@ int main(int argc, char **argv) {
     char **filename = malloc(sizeof(char*));
     parse_args(argc, argv, &address, &port, &mimetype, filename);
 
-    printf("Serving %s with mime type %s on %s:%d\n",
-            *filename, mimetype, address, port);
+    printf("Serving %s with mime type %s\n", *filename, mimetype);
 
     off_t datasz;
     int datafd = load_file(*filename, &datasz);

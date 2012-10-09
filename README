@@ -5,16 +5,20 @@ Build:
 
     gcc -Ofast -Wall share.c -o share
 
-Run:
+Run locally:
 
     # Serve on localhost:8080 with mime type text/plain
     share test.txt
 
-    # Serve on 123.456.7.8:80 with mime text/html
+Run properly:
+
+    share -h my.example.com -p 8000 -m image/png come_back_later.png
+
     share -h 123.456.7.8 -p 80 -m text/html maintenance.html
 
-    # Or port 8080 (default)  mime image/png
-    share -h 123.456.7.8 -m image/png come_back_later.png
+    share -h file.example.com -p 8001 -m application/octet-stream backup.tar.gz
+
+Defaults: Host is localhost, port is 8080, mime type is text/plain.
 
 Note that this serves _only a single file_. If you serve HTML, all
 your media must be inline (base64 url's, for example).
