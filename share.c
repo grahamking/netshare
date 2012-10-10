@@ -83,7 +83,7 @@ uint32_t offsetsz = 100;    // Size of 'offset'
 // Used by pipe case
 int *pipes;                 // Kernel pipes we put payload into
 int num_pipes = 0;          // Length of 'pipes' array
-int *pipe_index;            // index = fd, val = pipes index number that fd is at
+unsigned char *pipe_index;  // index = fd, val = pipes index number that fd is at
 int pipe_index_sz = 100;    // Number of active connections
 
 int is_pipe = 0;        // Are we using pipes? Otherwise sendfile.
@@ -92,7 +92,7 @@ int is_pipe = 0;        // Are we using pipes? Otherwise sendfile.
 // Return 1 if we're done writing, 0 if more needed.
 int swrite_pipe(int connfd, int efd, off_t datasz) {
 
-    int curr_index = pipe_index[connfd]++;
+    unsigned char curr_index = pipe_index[connfd]++;
     //printf("connfd: %d, curr_index: %d, num_pipes: %d\n", connfd, curr_index, num_pipes);
 
     // Copy pipe so we don't consume it
@@ -205,11 +205,11 @@ void grow_pipe_index() {
 
     int new_pipe_index_sz = pipe_index_sz * 2;
 
-    int *old_pi = pipe_index;
-    int *new_pi = malloc(sizeof(int) * new_pipe_index_sz);
-    memset(new_pi, 0, new_pipe_index_sz);
+    unsigned char *old_pi = pipe_index;
+    unsigned char *new_pi = malloc(sizeof(unsigned char) * new_pipe_index_sz);
+    memset(new_pi, 0, sizeof(unsigned char) * new_pipe_index_sz);
 
-    memcpy(new_pi, old_pi, pipe_index_sz);
+    memcpy(new_pi, old_pi, sizeof(unsigned char) * pipe_index_sz);
 
     pipe_index = new_pi;
     free(old_pi);
