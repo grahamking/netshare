@@ -11,7 +11,7 @@
  * ---
  *
  * On loopback with 8k jpeg can get:
- *  - splice: ~ 9k requests / sec
+ *  - splice: ~ 11k requests / sec
  *  - sendfile: ~ 7k requests / sec
  * Using ab -n 5000 -c 50 for tests.
  * Concurrency from 20 - 500 gets similar results
@@ -113,7 +113,7 @@ int swrite_pipe(int connfd, int efd, off_t datasz) {
             0,
             connfd,
             0,
-            PIPE_SIZE,
+            datasz < PIPE_SIZE ? datasz: PIPE_SIZE,
             SPLICE_F_NONBLOCK);
 
     if (num_wrote == -1) {
