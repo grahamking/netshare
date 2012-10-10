@@ -65,7 +65,9 @@
 #define DEFAULT_PORT 8080
 #define DEFAULT_MIME_TYPE "text/plain"
 #define USAGE "USAGE: share [-h host] [-p port] [-m mime/type] <filename>\n"
-#define HEAD_TMPL "HTTP/1.0 200 OK\nContent-Type: %s\nContent-Length: %ld\n\n"
+
+// HTTP headers
+#define HEAD_TMPL "HTTP/1.0 200 OK\nCache-Control: max-age=31536000\nExpires: Thu, 31 Dec 2037 23:55:55 GMT\nContent-Type: %s\nContent-Length: %ld\n\n"
 
 // Max bytes a Linux pipe can hold
 #define PIPE_SIZE (64 * 1024)
