@@ -138,13 +138,20 @@ int swrite_pipe(int connfd, int efd, off_t datasz) {
 // Return 1 if we're done writing, 0 if more is needed.
 int swrite_sendfile(int connfd, int efd, int datafd, off_t datasz) {
 
+    ssize_t num_wrote = 0;
+
     if (offset[connfd] == 0) {
-        if ( write(connfd, headers, strlen(headers)) == -1 ) {
-            error(0, errno, "Error writing headers\n");
+        num_wrote = write(connfd, headers, strlen(headers));
+        if (num_wrote == -1) {
+            if (errno == EAGAIN || errno == ECONNRESET) {
+                // No data or client closed connection. epoll will tell us next step.
+                return 0;
+            }
+            error(0, errno, "Error writing headers");
         }
     }
 
-    ssize_t num_wrote = sendfile(connfd, datafd, &offset[connfd], datasz - offset[connfd]);
+    num_wrote = sendfile(connfd, datafd, &offset[connfd], datasz - offset[connfd]);
     if (num_wrote == -1) {
         if (errno == EAGAIN || errno == ECONNRESET) {
             // No data or client closed connection. epoll will tell us next step.
@@ -230,7 +237,7 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
     if (is_pipe && connfd >= pipe_index_sz) {
         grow_pipe_index();
     }
-    else if (connfd >= offsetsz) {
+    else if (!is_pipe && connfd >= offsetsz) {
         grow_offset();
     }
 
@@ -250,7 +257,10 @@ void shut(int connfd, int efd) {
     shutdown(connfd, SHUT_WR);
 
     // Stop listening to EPOLLOUT. Only waiting for HUP now.
+
     struct epoll_event ev;
+    memset(&ev, 0, sizeof(struct epoll_event));
+
     ev.events = EPOLLIN;
     ev.data.fd = connfd;
     if (epoll_ctl(efd, EPOLL_CTL_MOD, connfd, &ev) == -1) {
