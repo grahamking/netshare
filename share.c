@@ -100,11 +100,11 @@ int swrite_pipe(int connfd, int efd, off_t datasz) {
     // Copy pipe so we don't consume it
     int pipefds[2];
     if (pipe(pipefds) == -1) {
-        error(EXIT_FAILURE, errno, "Error creating tee pipe\n");
+        error(EXIT_FAILURE, errno, "Error %d creating tee pipe\n", errno);
     }
 
     if (tee(pipes[curr_index], pipefds[1], datasz, 0) == -1) {
-        error(EXIT_FAILURE, errno, "Error on tee");
+        error(EXIT_FAILURE, errno, "Error %d on tee", errno);
     }
     close(pipefds[1]);
 
@@ -124,7 +124,7 @@ int swrite_pipe(int connfd, int efd, off_t datasz) {
             //printf("EAGAIN\n");
             return 0;
         }
-        error(EXIT_FAILURE, errno, "Error splicing out to socket");
+        error(EXIT_FAILURE, errno, "Error %d splicing out to socket", errno);
     }
 
     close(pipefd);
@@ -149,7 +149,7 @@ int swrite_sendfile(int connfd, int efd, int datafd, off_t datasz) {
                 // No data or client closed connection. epoll will tell us next step.
                 return 0;
             }
-            error(0, errno, "Error writing headers");
+            error(0, errno, "Error %d writing headers", errno);
         }
     }
 
@@ -160,7 +160,7 @@ int swrite_sendfile(int connfd, int efd, int datafd, off_t datasz) {
             return 0;
         }
 
-        error(EXIT_FAILURE, errno, "Error senfile");
+        error(EXIT_FAILURE, errno, "Error %d senfile", errno);
     }
 
     //printf("%d: Wrote total %ld / %ld bytes\n", connfd, offset[connfd], datasz);
@@ -182,7 +182,7 @@ void sclose(int connfd) {
     }
 
     if (close(connfd) == -1) {      // close also removes it from epoll
-        error(EXIT_FAILURE, errno, "Error closing connfd");
+        error(EXIT_FAILURE, errno, "Error %d closing connfd", errno);
     }
 }
 
@@ -226,7 +226,12 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
 
     int connfd = accept4(sockfd, NULL, 0, SOCK_NONBLOCK);
     if (connfd == -1) {
-        error(EXIT_FAILURE, errno, "Error 'accept' on socket");
+        if (errno == EAGAIN) {
+            // Another worker process got there before us - no problem
+            return -1;
+        } else {
+            error(EXIT_FAILURE, errno, "Error %d 'accept' on socket", errno);
+        }
     }
 
     // TCP_CORK means headers and first part of data will go in same TCP packet
@@ -246,7 +251,7 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
     evp->events = EPOLLOUT;
     evp->data.fd = connfd;
     if (epoll_ctl(efd, EPOLL_CTL_ADD, connfd, evp) == -1) {
-        error(EXIT_FAILURE, errno, "Error adding to epoll descriptor");
+        error(EXIT_FAILURE, errno, "Error %d adding to epoll descriptor", errno);
     }
 
     return connfd;
@@ -263,10 +268,10 @@ void shut(int connfd, int efd) {
     struct epoll_event ev;
     memset(&ev, 0, sizeof(struct epoll_event));
 
-    ev.events = EPOLLIN;
+    ev.events = EPOLLHUP;
     ev.data.fd = connfd;
     if (epoll_ctl(efd, EPOLL_CTL_MOD, connfd, &ev) == -1) {
-        error(EXIT_FAILURE, errno, "Error changing epoll descriptor");
+        error(EXIT_FAILURE, errno, "Error %d changing epoll descriptor", errno);
     }
 }
 
@@ -277,15 +282,19 @@ void do_event(
     int connfd = -1;
     int done = 0;        // Are we done writing?
 
+    //printf(" fd = %d ", evp->data.fd);
+
     //printf("Is ready: %d\n", evp->data.fd);
     if (evp->data.fd == sockfd) {
-        connfd = acceptnew(sockfd, efd, evp);
+        //printf("New connection\n");
+        acceptnew(sockfd, efd, evp);
 
     } else {
-        connfd = evp->data.fd;
         //printf("Events: %d\n", evp->events);
+        connfd = evp->data.fd;
 
         if (evp->events & EPOLLOUT) {
+            //printf("EPOLLOUT\n");
 
             if (is_pipe) {
                 done = swrite_pipe(connfd, efd, datasz);
@@ -300,6 +309,7 @@ void do_event(
         }
 
         if (evp->events & EPOLLHUP) {
+            //printf("EPOLLHUP\n");
             sclose(connfd);
         }
     }
@@ -345,12 +355,12 @@ int start_sock(char *address, int port) {
 
     int sockfd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
     if (sockfd == -1) {
-        error(EXIT_FAILURE, errno, "Error creating socket");
+        error(EXIT_FAILURE, errno, "Error %d creating socket", errno);
     }
 
     int optval = 1;
     if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) == -1) {
-        error(EXIT_FAILURE, errno, "Error setting SO_REUSEADDR on socket");
+        error(EXIT_FAILURE, errno, "Error %d setting SO_REUSEADDR on socket", errno);
     }
 
     address = as_numeric(address);
@@ -359,7 +369,7 @@ int start_sock(char *address, int port) {
     memset(&iaddr, 0, sizeof(struct in_addr));
     int err = inet_pton(AF_INET, address, &iaddr);
     if (err != 1) {
-        error(EXIT_FAILURE, errno, "Error converting address to network format");
+        error(EXIT_FAILURE, errno, "Error %d converting address to network format", errno);
     }
 
     memset(&saddr, 0, sizeof(struct sockaddr_in));
@@ -369,12 +379,12 @@ int start_sock(char *address, int port) {
 
     err = bind(sockfd, (struct sockaddr *) &saddr, sizeof(struct sockaddr_in));
     if (err == -1) {
-        error(EXIT_FAILURE, errno, "Error binding socket");
+        error(EXIT_FAILURE, errno, "Error %d binding socket", errno);
     }
 
     err = listen(sockfd, SOMAXCONN);
     if (err == -1) {
-        error(err, errno, "Error listening on socket");
+        error(err, errno, "Error %d listening on socket", errno);
     }
 
     return sockfd;
@@ -385,7 +395,7 @@ int start_epoll(int sockfd) {
 
     int efd = epoll_create(1);
     if (efd == -1) {
-        error(EXIT_FAILURE, errno, "Error creating epoll descriptor");
+        error(EXIT_FAILURE, errno, "Error %d creating epoll descriptor", errno);
     }
 
     struct epoll_event ev;
@@ -396,7 +406,7 @@ int start_epoll(int sockfd) {
 
     int err = epoll_ctl(efd, EPOLL_CTL_ADD, sockfd, &ev);
     if (err == -1) {
-        error(EXIT_FAILURE, errno, "Error adding to epoll descriptor");
+        error(EXIT_FAILURE, errno, "Error %d adding to epoll descriptor", errno);
     }
 
     return efd;
@@ -413,9 +423,10 @@ void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
 
         num_ready = epoll_wait(efd, events, 100, -1);
         if (num_ready == -1) {
-            error(EXIT_FAILURE, errno, "Error on epoll_wait");
+            error(EXIT_FAILURE, errno, "Error %d on epoll_wait", errno);
         }
 
+        //printf("%d: Ready %d - ", getpid(), num_ready);
         for (i = 0; i < num_ready; i++) {
             do_event(&events[i], sockfd, efd, datafd, datasz);
         }
@@ -429,7 +440,7 @@ int load_file(char *filename, off_t *datasz) {
     int datafd = open(filename, O_RDONLY);
     if (datafd == -1) {
         printf("Attempted to read: '%s'\n", filename);
-        error(EXIT_FAILURE, errno, "Error opening payload");
+        error(EXIT_FAILURE, errno, "Error %d opening payload", errno);
     }
 
     struct stat datastat;
@@ -437,7 +448,7 @@ int load_file(char *filename, off_t *datasz) {
     *datasz = datastat.st_size; // Output param
 
     if (readahead(datafd, 0, *datasz) == -1) {
-        error(EXIT_FAILURE, errno, "Error readahead of data file");
+        error(EXIT_FAILURE, errno, "Error %d readahead of data file", errno);
     }
 
     return datafd;
@@ -463,14 +474,14 @@ void preload(int datafd, off_t datasz) {
 
     char *store = mmap(NULL, page_align, PROT_READ|PROT_WRITE, MAP_ANON|MAP_PRIVATE, -1, 0);
     if (store == MAP_FAILED) {
-        error(EXIT_FAILURE, errno, "Error mmap storage area");
+        error(EXIT_FAILURE, errno, "Error %d mmap storage area", errno);
     }
 
     memcpy(store, headers, strlen(headers));
 
     char *mem_fd = mmap(NULL, datasz, PROT_READ, MAP_PRIVATE, datafd, 0);
     if (mem_fd == MAP_FAILED) {
-        error(EXIT_FAILURE, errno, "Error mmap of data file");
+        error(EXIT_FAILURE, errno, "Error %d mmap of data file", errno);
     }
     memcpy(store + strlen(headers), mem_fd, datasz);
 
@@ -484,7 +495,7 @@ void preload(int datafd, off_t datasz) {
 
         int pfd[2];
         if (pipe(pfd) == -1) {
-            error(EXIT_FAILURE, errno, "Error creating preload pipe\n");
+            error(EXIT_FAILURE, errno, "Error %d creating preload pipe", errno);
         }
 
         struct iovec iov;
@@ -492,7 +503,7 @@ void preload(int datafd, off_t datasz) {
         iov.iov_len = page_align - total_spliced;
         ssize_t bytes_spliced = vmsplice(pfd[1], &iov, 1, SPLICE_F_GIFT);
         if (bytes_spliced == -1) {
-            error(EXIT_FAILURE, errno, "Error vmsplice");
+            error(EXIT_FAILURE, errno, "Error %d vmsplice", errno);
         }
         close(pfd[1]);
 
@@ -504,13 +515,7 @@ void preload(int datafd, off_t datasz) {
 }
 
 // Parse command line arguments
-void parse_args(
-        int argc,
-        char **argv,
-        char **address,
-        int *port,
-        char **mimetype,
-        char **filename) {
+void parse_args(int argc, char **argv, char **address, int *port, char **mimetype, char **filename) {
 
     int ch;
     while ((ch = getopt(argc, argv, "h:p:m:")) != -1) {
@@ -584,16 +589,19 @@ int main(int argc, char **argv) {
 
     int efd = start_epoll(sockfd);
 
+    //pid_t child = fork();
+    // There's now two of us
+
     main_loop(efd, sockfd, datafd, transmit_sz);
 
     int err = close(datafd);
     if (err == -1) {
-        error(EXIT_FAILURE, errno, "Error closing payload fd");
+        error(EXIT_FAILURE, errno, "Error %d closing payload fd", errno);
     }
 
     err = close(sockfd);
     if (err == -1) {
-        error(EXIT_FAILURE, errno, "Error closing socket fd");
+        error(EXIT_FAILURE, errno, "Error %d closing socket fd", errno);
     }
 
     return 0;
