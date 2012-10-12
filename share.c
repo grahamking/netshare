@@ -355,8 +355,14 @@ int group(char *headers, int datafd, off_t datasz, off_t *groupedsz) {
         error(EXIT_FAILURE, errno, "Error %d creating temporary file %s", errno, tname);
     }
 
-    write(newfd, headers, strlen(headers));
-    sendfile(newfd, datafd, NULL, datasz);  // Copy datafd to newfd
+    if (write(newfd, headers, strlen(headers)) == -1) {
+        error(EXIT_FAILURE, errno, "Error %d writing headers to grouped file", errno);
+    }
+
+    // Copy datafd to newfd
+    if (sendfile(newfd, datafd, NULL, datasz) == -1) {
+        error(EXIT_FAILURE, errno, "Error %d sendfile-ing payload to grouped file", errno);
+    }
 
     fsync(newfd);
     lseek(newfd, 0, SEEK_SET);
