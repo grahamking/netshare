@@ -10,11 +10,8 @@
  *
  * ---
  *
- * On loopback with 8k jpeg can get:
- *  - splice: ~ 11k requests / sec
- *  - sendfile: ~ 7k requests / sec
- * Using ab -n 5000 -c 50 for tests.
- * Concurrency from 20 - 500 gets similar results
+ * On loopback with 8k jpeg can get ~11k requests / sec.
+ * Using ab -n 100000 -c 100 for tests.
  *
  */
 
@@ -58,7 +55,6 @@
 #include <fcntl.h>
 
 #include <sys/epoll.h>
-#include <sys/uio.h>
 #include <sys/mman.h>
 
 #define DEFAULT_ADDRESS "127.0.0.1"
@@ -69,90 +65,19 @@
 // HTTP headers
 #define HEAD_TMPL "HTTP/1.0 200 OK\nCache-Control: max-age=31536000\nExpires: Thu, 31 Dec 2037 23:55:55 GMT\nContent-Type: %s\nContent-Length: %ld\n\n"
 
-// Max bytes a Linux pipe can hold
-#define PIPE_SIZE (64 * 1024)
-
-// Smaller files are loaded in kernel pipes. Bigger files use sendfile.
-#define MEGABYTES (1024 * 1024)
-#define THRESHOLD (5 * MEGABYTES)
-
 char *headers;      // HTTP headers
 
 // Used by sendfile case
 off_t *offset;              // Current offset within data file at index's fd
 uint32_t offsetsz = 100;    // Size of 'offset'
 
-// Used by pipe case
-int *pipes;                 // Kernel pipes we put payload into
-int num_pipes = 0;          // Length of 'pipes' array
-unsigned char *pipe_index;  // index = fd, val = pipes index number that fd is at
-int pipe_index_sz = 100;    // Number of active connections
-
-int is_pipe = 0;        // Are we using pipes? Otherwise sendfile.
-
-// Write to socket using pipes.
-// Return 1 if we're done writing, 0 if more needed.
-int swrite_pipe(int connfd, int efd, off_t datasz) {
-
-    unsigned char curr_index = pipe_index[connfd]++;
-    //printf("connfd: %d, curr_index: %d, num_pipes: %d\n", connfd, curr_index, num_pipes);
-
-    // Copy pipe so we don't consume it
-    int pipefds[2];
-    if (pipe(pipefds) == -1) {
-        error(EXIT_FAILURE, errno, "Error %d creating tee pipe\n", errno);
-    }
-
-    if (tee(pipes[curr_index], pipefds[1], datasz, 0) == -1) {
-        error(EXIT_FAILURE, errno, "Error %d on tee", errno);
-    }
-    close(pipefds[1]);
-
-    int pipefd = pipefds[0];
-
-    ssize_t num_wrote = splice(
-            pipefd,
-            0,
-            connfd,
-            0,
-            datasz < PIPE_SIZE ? datasz: PIPE_SIZE,
-            SPLICE_F_NONBLOCK);
-
-    if (num_wrote == -1) {
-        if (errno == EAGAIN || errno == ECONNRESET) {
-            // No data or client closed connection. epoll will tell us next step.
-            //printf("EAGAIN\n");
-            return 0;
-        }
-        error(EXIT_FAILURE, errno, "Error %d splicing out to socket", errno);
-    }
-
-    close(pipefd);
-
-    if (curr_index == num_pipes - 1) {
-        return 1;
-    }
-
-    return 0;
-}
-
 // Write to socket using sendfile
 // Return 1 if we're done writing, 0 if more is needed.
-int swrite_sendfile(int connfd, int efd, int datafd, off_t datasz) {
+int swrite_sendfile(int connfd, int datafd, off_t datasz) {
 
     ssize_t num_wrote = 0;
 
-    if (offset[connfd] == 0) {
-        num_wrote = write(connfd, headers, strlen(headers));
-        if (num_wrote == -1) {
-            if (errno == EAGAIN || errno == ECONNRESET) {
-                // No data or client closed connection. epoll will tell us next step.
-                return 0;
-            }
-            error(0, errno, "Error %d writing headers", errno);
-        }
-    }
-
+    //printf("Calling sendfile with: %d %d &%ld %ld\n", connfd, datafd, offset[connfd], datasz - offset[connfd]);
     num_wrote = sendfile(connfd, datafd, &offset[connfd], datasz - offset[connfd]);
     if (num_wrote == -1) {
         if (errno == EAGAIN || errno == ECONNRESET) {
@@ -175,11 +100,7 @@ int swrite_sendfile(int connfd, int efd, int datafd, off_t datasz) {
 // Close socket
 void sclose(int connfd) {
 
-    if (is_pipe) {
-        pipe_index[connfd] = 0;
-    } else {
-        offset[connfd] = 0;
-    }
+    offset[connfd] = 0;
 
     if (close(connfd) == -1) {      // close also removes it from epoll
         error(EXIT_FAILURE, errno, "Error %d closing connfd", errno);
@@ -189,62 +110,38 @@ void sclose(int connfd) {
 // Increase size of offset storage
 void grow_offset() {
 
-    int offtsz = sizeof(off_t);
-    off_t *old_offset = offset;
-    off_t *new_offset = malloc(offtsz * offsetsz * 2);
-    memset(new_offset, 0, offtsz * offsetsz * 2);
+    size_t offt_sz = sizeof(off_t);
+    size_t current_sz = offsetsz * offt_sz;
 
-    memcpy(new_offset, old_offset, offtsz * offsetsz);
+    // Double size of offset storage
+    offset = realloc(offset, current_sz * 2);
+    if (offset == NULL) {
+        error(EXIT_FAILURE, errno, "Error on realloc of offset");
+    }
 
-    offset = new_offset;
-    free(old_offset);
+    // Initialize second (new) half with 0's
+    memset(&offset[offsetsz], 0, current_sz);
 
     offsetsz *= 2;
 }
 
-// Increase the size of pipe index storage
-void grow_pipe_index() {
-
-    int new_pipe_index_sz = pipe_index_sz * 2;
-
-    unsigned char *old_pi = pipe_index;
-    unsigned char *new_pi = malloc(sizeof(unsigned char) * new_pipe_index_sz);
-    memset(new_pi, 0, sizeof(unsigned char) * new_pipe_index_sz);
-
-    memcpy(new_pi, old_pi, sizeof(unsigned char) * pipe_index_sz);
-
-    pipe_index = new_pi;
-    free(old_pi);
-
-    pipe_index_sz = new_pipe_index_sz;
-}
-
-// Accept a new connection on sockfd, and add it to epoll
+// Accept a new connection on sockfd, and add it to epoll.
+//
 // We re-used the epoll_event to save allocating a new one each time on
 // the stack. I _think_ that's a good idea.
-int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
+void acceptnew(int sockfd, int efd, struct epoll_event *evp) {
 
-    int connfd = accept4(sockfd, NULL, 0, SOCK_NONBLOCK);
+    int connfd = accept4(sockfd, NULL, NULL, SOCK_NONBLOCK);
     if (connfd == -1) {
         if (errno == EAGAIN) {
             // Another worker process got there before us - no problem
-            return -1;
+            return;
         } else {
             error(EXIT_FAILURE, errno, "Error %d 'accept' on socket", errno);
         }
     }
 
-    // TCP_CORK means headers and first part of data will go in same TCP packet
-    // Only needed for sendfile case
-    if (is_pipe == 0) {
-        int optval = 1;
-        setsockopt(connfd, IPPROTO_TCP, TCP_CORK, &optval, sizeof(optval));
-    }
-
-    if (is_pipe && connfd >= pipe_index_sz) {
-        grow_pipe_index();
-    }
-    else if (!is_pipe && connfd >= offsetsz) {
+    if (connfd >= offsetsz) {
         grow_offset();
     }
 
@@ -253,17 +150,11 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
     if (epoll_ctl(efd, EPOLL_CTL_ADD, connfd, evp) == -1) {
         error(EXIT_FAILURE, errno, "Error %d adding to epoll descriptor", errno);
     }
-
-    return connfd;
 }
 
 // We're done writing.
-// Shutdown our site of connfd connection, and stop epoll-ing it for out ready.
+// Shutdown our side of connfd connection, and stop epoll-ing it for out ready.
 void shut(int connfd, int efd) {
-
-    shutdown(connfd, SHUT_WR);
-
-    // Stop listening to EPOLLOUT. Only waiting for HUP now.
 
     struct epoll_event ev;
     memset(&ev, 0, sizeof(struct epoll_event));
@@ -272,6 +163,10 @@ void shut(int connfd, int efd) {
     ev.data.fd = connfd;
     if (epoll_ctl(efd, EPOLL_CTL_MOD, connfd, &ev) == -1) {
         error(EXIT_FAILURE, errno, "Error %d changing epoll descriptor", errno);
+    }
+
+    if (shutdown(connfd, SHUT_WR) == -1) {
+        error(EXIT_FAILURE, errno, "Error %d on connection shutdown", errno);
     }
 }
 
@@ -296,11 +191,7 @@ void do_event(
         if (evp->events & EPOLLOUT) {
             //printf("EPOLLOUT\n");
 
-            if (is_pipe) {
-                done = swrite_pipe(connfd, efd, datasz);
-            } else {
-                done = swrite_sendfile(connfd, efd, datafd, datasz);
-            }
+            done = swrite_sendfile(connfd, datafd, datasz);
 
             if (done) {
                 shut(connfd, efd);
@@ -318,7 +209,7 @@ void do_event(
 // Convert domain name to IP address, if needed
 char *as_numeric(char *address) {
 
-    if (0x30 <= address[0] && address[0] < 0x3a) {
+    if ('0' <= address[0] && address[0] <= '9') {
         // Already numeric
         return address;
     }
@@ -433,7 +324,7 @@ void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
     }
 }
 
-// Load the payload file, pre-fetch it, and return it's fd.
+// Load the payload file and return it's fd.
 // Second param datasz is output param, size of file in bytes.
 int load_file(char *filename, off_t *datasz) {
 
@@ -447,71 +338,42 @@ int load_file(char *filename, off_t *datasz) {
     fstat(datafd, &datastat);
     *datasz = datastat.st_size; // Output param
 
-    if (readahead(datafd, 0, *datasz) == -1) {
-        error(EXIT_FAILURE, errno, "Error %d readahead of data file", errno);
-    }
-
     return datafd;
 }
 
-// Return next biggest page multiple after initial.
-size_t page_multiple(size_t initial) {
+/* Group headers and data file into a temporary file,
+ * so that we can send it with a single sendfile, rather than write
+ * headers then sendfile - 1 less syscall.
+ * Closes the data file and returns fd of grouped file.
+ * groupedsz is output parameter: grouped file size.
+*/
+int group(char *headers, int datafd, off_t datasz, off_t *groupedsz) {
 
-    int page_size = sysconf(_SC_PAGESIZE);
-    if (initial < page_size) {
-        return page_size;
-    } else {
-        int pages = (int) (initial / page_size);
-        return page_size * (pages + 1);
-    }
-}
-
-// Store headers + data file in kernel pipes, int 'pipes' global array.
-void preload(int datafd, off_t datasz) {
-
-    int total_payload = datasz + strlen(headers);
-    int page_align = page_multiple(total_payload);
-
-    char *store = mmap(NULL, page_align, PROT_READ|PROT_WRITE, MAP_ANON|MAP_PRIVATE, -1, 0);
-    if (store == MAP_FAILED) {
-        error(EXIT_FAILURE, errno, "Error %d mmap storage area", errno);
+    char tname[] = "/tmp/netshare_XXXXXX";
+    int newfd = mkstemp(tname);
+    if (newfd == -1) {
+        error(EXIT_FAILURE, errno, "Error %d creating temporary file %s", errno, tname);
     }
 
-    memcpy(store, headers, strlen(headers));
+    write(newfd, headers, strlen(headers));
+    sendfile(newfd, datafd, NULL, datasz);  // Copy datafd to newfd
 
-    char *mem_fd = mmap(NULL, datasz, PROT_READ, MAP_PRIVATE, datafd, 0);
-    if (mem_fd == MAP_FAILED) {
-        error(EXIT_FAILURE, errno, "Error %d mmap of data file", errno);
-    }
-    memcpy(store + strlen(headers), mem_fd, datasz);
+    fsync(newfd);
+    lseek(newfd, 0, SEEK_SET);
 
-    num_pipes = (int) total_payload / PIPE_SIZE + 1;
-    pipes = malloc(sizeof(int) * num_pipes);
-    memset(pipes, 0, sizeof(pipes));
-
-    int total_spliced = 0;
-    int next_pipe = 0;
-    while (total_spliced < total_payload) {
-
-        int pfd[2];
-        if (pipe(pfd) == -1) {
-            error(EXIT_FAILURE, errno, "Error %d creating preload pipe", errno);
-        }
-
-        struct iovec iov;
-        iov.iov_base = store + total_spliced;
-        iov.iov_len = page_align - total_spliced;
-        ssize_t bytes_spliced = vmsplice(pfd[1], &iov, 1, SPLICE_F_GIFT);
-        if (bytes_spliced == -1) {
-            error(EXIT_FAILURE, errno, "Error %d vmsplice", errno);
-        }
-        close(pfd[1]);
-
-        total_spliced += bytes_spliced;
-
-        pipes[next_pipe++] = pfd[0];
+    if (close(datafd) == -1) {
+        error(EXIT_FAILURE, errno, "Error %d closing payload fd", errno);
     }
 
+    struct stat datastat;
+    fstat(newfd, &datastat);
+    *groupedsz = datastat.st_size; // Output param
+
+    if (readahead(newfd, 0, *groupedsz) == -1) {
+        error(EXIT_FAILURE, errno, "Error %d readahead of grouped file", errno);
+    }
+
+    return newfd;
 }
 
 // Parse command line arguments
@@ -564,44 +426,24 @@ int main(int argc, char **argv) {
     headers = malloc(strlen(HEAD_TMPL) + 12 + strlen(mimetype));
     sprintf(headers, HEAD_TMPL, mimetype, datasz);
 
-    int transmit_sz;    // How much data to send to clients
+    datafd = group(headers, datafd, datasz, &datasz);
+    // datasz is now the combined headers + payload size - 'group' changed it
 
-    if (datasz < THRESHOLD) {
-        printf("Serving with kernel pipes\n");
-        is_pipe = 1;
-
-        pipe_index = malloc(sizeof(int) * pipe_index_sz);
-        memset(pipe_index, 0, 100);
-
-        preload(datafd, datasz);
-
-        transmit_sz = datasz + strlen(headers);
-
-    } else {
-        printf("Serving with sendfile\n");
-        is_pipe = 0;
-
-        offset = malloc(sizeof(off_t) * offsetsz);
-        memset(offset, 0, sizeof(off_t) * offsetsz);
-
-        transmit_sz = datasz;
-    }
+    offset = malloc(sizeof(off_t) * offsetsz);
+    memset(offset, 0, sizeof(off_t) * offsetsz);
 
     int efd = start_epoll(sockfd);
 
     //pid_t child = fork();
     // There's now two of us
 
-    main_loop(efd, sockfd, datafd, transmit_sz);
+    main_loop(efd, sockfd, datafd, datasz);
 
-    int err = close(datafd);
-    if (err == -1) {
-        error(EXIT_FAILURE, errno, "Error %d closing payload fd", errno);
-    }
-
-    err = close(sockfd);
-    if (err == -1) {
+    if (close(sockfd) == -1) {
         error(EXIT_FAILURE, errno, "Error %d closing socket fd", errno);
+    }
+    if (close(datafd) == -1) {
+        error(EXIT_FAILURE, errno, "Error %d closing grouped fd", errno);
     }
 
     return 0;

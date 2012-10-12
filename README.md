@@ -29,12 +29,16 @@ Defaults: Host is localhost, port is 8080, mime type is text/plain.
 
 Note that this serves _only a single file_. If you serve HTML, all your media must be inline (base64 url's, for example).
 
-Files under 5M are served by stashing them in kernel pipes, files above that use sendfile. Feel free to tweak THRESHOLD - the limiting factor is open files.
-
 This program does some unorthodox things, in an effort to be very fast:
 
- - It splits the file into 64k chunks and stores those chunks in kernel pipes (if the file is under 5M).
  - It shuts down the TCP connection once the file is sent - traditionally the client should initiate connection close. It sets SO_REUSEADDR to handle the resulting TIME_WAIT sockets.
  - It doesn't read anything the client sends.
+ - It adds the headers to the payload, and writes the whole thing to a temporary file.
+
+Other than than it mostly just uses `epoll` and `sendfile`, which are both wonderful facilities the kernel provides.
 
 Linux only, recent kernel's (2.6.17+).
+
+Performance: Well that's difficult to judge. With an 8k jpeg, on loopback, I can get 11k requests a second on a low-spec laptop. The limiting factor in a performance test is nearly always going to be the bandwidth of your test clients.
+
+BUGS: /tmp/netshare_XXXXXX files are not cleaned up.
