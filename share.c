@@ -10,7 +10,10 @@
  *
  * ---
  *
- * On loopback with 8k jpeg can get ~11k requests / sec.
+ * On loopback with 8k jpeg:
+ *  - Thinkpad R61 (Centrino) can get ~11k requests / sec.
+ *  - Thinkpad X1 Carbon (Core i5 1.7Ghz) gets ~26k requests/sec.
+ *
  * Using ab -n 100000 -c 100 for tests.
  *
  */
@@ -57,6 +60,8 @@
 #include <sys/epoll.h>
 #include <sys/mman.h>
 
+//#define DEBUG     // Comment in for verbose output
+
 #define DEFAULT_ADDRESS "127.0.0.1"
 #define DEFAULT_PORT 8080
 #define DEFAULT_MIME_TYPE "text/plain"
@@ -67,7 +72,6 @@
 
 char *headers;      // HTTP headers
 
-// Used by sendfile case
 off_t *offset;              // Current offset within data file at index's fd
 uint32_t offsetsz = 100;    // Size of 'offset'
 
@@ -78,18 +82,21 @@ int swrite_sendfile(int connfd, int datafd, off_t datasz) {
 
     ssize_t num_wrote = 0;
 
-    //printf("Calling sendfile with: %d %d &%ld %ld\n", connfd, datafd, offset[connfd], datasz - offset[connfd]);
+#ifdef DEBUG
+    printf("Calling sendfile with: %d %d &%ld %ld\n", connfd, datafd, offset[connfd], datasz - offset[connfd]);
+#endif
     num_wrote = sendfile(connfd, datafd, &offset[connfd], datasz - offset[connfd]);
     if (num_wrote == -1) {
         if (errno == EAGAIN || errno == ECONNRESET) {
             // No data or client closed connection. epoll will tell us next step.
             return 0;
         }
-
-        error(EXIT_FAILURE, errno, "Error %d senfile", errno);
+        error(EXIT_FAILURE, errno, "Error %d sendfile", errno);
     }
 
-    //printf("%d: Wrote total %ld / %ld bytes\n", connfd, offset[connfd], datasz);
+#ifdef DEBUG
+    printf("%d: Wrote total %ld / %ld bytes\n", connfd, offset[connfd], datasz);
+#endif
 
     if (offset[connfd] >= datasz) {
         return 1;
@@ -138,7 +145,8 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
     int connfd = accept4(sockfd, NULL, NULL, SOCK_NONBLOCK);
     if (connfd == -1) {
         if (errno == EAGAIN) {
-            // Another worker process got there before us - no problem
+            // If we were multi-process, we'd get this error if another
+            // worker process got there before us - no problem
             return 0;
         } else {
             error(0, errno, "Error %d 'accept' on socket", errno);
@@ -149,6 +157,10 @@ int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
     if (connfd >= offsetsz) {
         grow_offset();
     }
+
+#ifdef DEBUG
+    printf("%d: Accepted: %d\n", getpid(), connfd);
+#endif
 
     evp->events = EPOLLOUT;
     evp->data.fd = connfd;
@@ -188,30 +200,36 @@ void do_event(
     int connfd = -1;
     int done = 0;        // Are we done writing?
 
-    //printf(" fd = %d ", evp->data.fd);
+#ifdef DEBUG
+    printf("%d: fd = %d, offset = %jd\n", getpid(), evp->data.fd, (intmax_t) offset[evp->data.fd]);
+#endif
 
-    //printf("Is ready: %d\n", evp->data.fd);
     if (evp->data.fd == sockfd) {
-        //printf("New connection\n");
+#ifdef DEBUG
+        printf("%d: New connection\n", getpid());
+#endif
         acceptnew(sockfd, efd, evp);
 
     } else {
-        //printf("Events: %d\n", evp->events);
         connfd = evp->data.fd;
 
         if (evp->events & EPOLLOUT) {
-            //printf("EPOLLOUT\n");
+#ifdef DEBUG
+            printf("%d: EPOLLOUT\n", getpid());
+#endif
 
             done = swrite_sendfile(connfd, datafd, datasz);
 
-            if (done) {
+            if (done == 1) {
                 shut(connfd, efd);
             }
 
         }
 
         if (evp->events & EPOLLHUP) {
-            //printf("EPOLLHUP\n");
+#ifdef DEBUG
+            printf("%d: EPOLLHUP\n", getpid());
+#endif
             sclose(connfd);
         }
     }
@@ -328,7 +346,9 @@ void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
             error(EXIT_FAILURE, errno, "Error %d on epoll_wait", errno);
         }
 
-        //printf("%d: Ready %d - ", getpid(), num_ready);
+#ifdef DEBUG
+        printf("%d: Num fd's ready = %d\n", getpid(), num_ready);
+#endif
         for (i = 0; i < num_ready; i++) {
             do_event(&events[i], sockfd, efd, datafd, datasz);
         }
@@ -447,13 +467,15 @@ int main(int argc, char **argv) {
     datafd = group(headers, datafd, datasz, &datasz);
     // datasz is now the combined headers + payload size - 'group' changed it
 
-    offset = malloc(sizeof(off_t) * offsetsz);
-    memset(offset, 0, sizeof(off_t) * offsetsz);
+    /* To make multi-process, fork here. Everything should just work.
+     * In my tests it goes _slower_ if we fork.
+     */
+    // fork();
 
     int efd = start_epoll(sockfd);
 
-    //pid_t child = fork();
-    // There's now two of us
+    offset = malloc(sizeof(off_t) * offsetsz);
+    memset(offset, 0, sizeof(off_t) * offsetsz);
 
     main_loop(efd, sockfd, datafd, datasz);
 
