@@ -71,8 +71,9 @@ char *headers;      // HTTP headers
 off_t *offset;              // Current offset within data file at index's fd
 uint32_t offsetsz = 100;    // Size of 'offset'
 
-// Write to socket using sendfile
-// Return 1 if we're done writing, 0 if more is needed.
+/* Write to socket using sendfile
+ * Return 1 if we're done writing, 0 if more is needed.
+ */
 int swrite_sendfile(int connfd, int datafd, off_t datasz) {
 
     ssize_t num_wrote = 0;
@@ -97,7 +98,7 @@ int swrite_sendfile(int connfd, int datafd, off_t datasz) {
     return 0;
 }
 
-// Close socket
+/* Close socket */
 void sclose(int connfd) {
 
     offset[connfd] = 0;
@@ -107,7 +108,7 @@ void sclose(int connfd) {
     }
 }
 
-// Increase size of offset storage
+/* Increase size of offset storage */
 void grow_offset() {
 
     size_t offt_sz = sizeof(off_t);
@@ -125,19 +126,23 @@ void grow_offset() {
     offsetsz *= 2;
 }
 
-// Accept a new connection on sockfd, and add it to epoll.
-//
-// We re-used the epoll_event to save allocating a new one each time on
-// the stack. I _think_ that's a good idea.
-void acceptnew(int sockfd, int efd, struct epoll_event *evp) {
+/* Accept a new connection on sockfd, and add it to epoll.
+ *
+ * We re-used the epoll_event to save allocating a new one each time on
+ * the stack. I _think_ that's a good idea.
+ *
+ * Returns -1 if error.
+ */
+int acceptnew(int sockfd, int efd, struct epoll_event *evp) {
 
     int connfd = accept4(sockfd, NULL, NULL, SOCK_NONBLOCK);
     if (connfd == -1) {
         if (errno == EAGAIN) {
             // Another worker process got there before us - no problem
-            return;
+            return 0;
         } else {
-            error(EXIT_FAILURE, errno, "Error %d 'accept' on socket", errno);
+            error(0, errno, "Error %d 'accept' on socket", errno);
+            return -1;
         }
     }
 
@@ -150,11 +155,14 @@ void acceptnew(int sockfd, int efd, struct epoll_event *evp) {
     if (epoll_ctl(efd, EPOLL_CTL_ADD, connfd, evp) == -1) {
         error(EXIT_FAILURE, errno, "Error %d adding to epoll descriptor", errno);
     }
+
+    return 0;
 }
 
-// We're done writing.
-// Shutdown our side of connfd connection, and stop epoll-ing it for out ready.
-void shut(int connfd, int efd) {
+/* We're done writing.
+ * Shutdown our side of connfd connection, and stop epoll-ing it for out ready.
+ */
+int shut(int connfd, int efd) {
 
     struct epoll_event ev;
     memset(&ev, 0, sizeof(struct epoll_event));
@@ -166,11 +174,14 @@ void shut(int connfd, int efd) {
     }
 
     if (shutdown(connfd, SHUT_WR) == -1) {
-        error(EXIT_FAILURE, errno, "Error %d on connection shutdown", errno);
+        error(0, errno, "Error %d on connection shutdown", errno);
+        return -1;
     }
+
+    return 0;
 }
 
-// Process an epoll event
+/* Process an epoll event */
 void do_event(
     struct epoll_event *evp, int sockfd, int efd, int datafd, off_t datasz) {
 
@@ -206,7 +217,7 @@ void do_event(
     }
 }
 
-// Convert domain name to IP address, if needed
+/* Convert domain name to IP address, if needed */
 char *as_numeric(char *address) {
 
     if ('0' <= address[0] && address[0] <= '9') {
@@ -238,7 +249,7 @@ char *as_numeric(char *address) {
     return ip_address;
 }
 
-// Open the socket and listen on it. Returns the sockets fd.
+/* Open the socket and listen on it. Returns the sockets fd. */
 int start_sock(char *address, int port) {
 
     struct in_addr iaddr;
@@ -281,7 +292,7 @@ int start_sock(char *address, int port) {
     return sockfd;
 }
 
-// Create epoll fd and add sockfd to it. Returns epoll fd.
+/* Create epoll fd and add sockfd to it. Returns epoll fd. */
 int start_epoll(int sockfd) {
 
     int efd = epoll_create(1);
@@ -303,7 +314,7 @@ int start_epoll(int sockfd) {
     return efd;
 }
 
-// Wait for epoll events and act on them
+/* Wait for epoll events and act on them */
 void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
 
     int i;
@@ -324,8 +335,9 @@ void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
     }
 }
 
-// Load the payload file and return it's fd.
-// Second param datasz is output param, size of file in bytes.
+/* Load the payload file and return it's fd.
+ * Second param datasz is output param, size of file in bytes.
+ */
 int load_file(char *filename, off_t *datasz) {
 
     int datafd = open(filename, O_RDONLY);
@@ -382,7 +394,7 @@ int group(char *headers, int datafd, off_t datasz, off_t *groupedsz) {
     return newfd;
 }
 
-// Parse command line arguments
+/* Parse command line arguments */
 void parse_args(int argc, char **argv, char **address, int *port, char **mimetype, char **filename) {
 
     int ch;
@@ -411,7 +423,7 @@ void parse_args(int argc, char **argv, char **address, int *port, char **mimetyp
     *filename = argv[optind];
 }
 
-// Start here
+/* Start here */
 int main(int argc, char **argv) {
 
     int port = DEFAULT_PORT;
