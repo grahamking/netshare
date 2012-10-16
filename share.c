@@ -8,19 +8,24 @@
  *
  * Default host / port is localhost:8080, mimetype text/plain.
  *
- * ---
+ * --- Performance
  *
- * Using ab -n 100000 -c 100 for tests.
+ * Testing with an 8k jpeg, using "ab -n 100000 -c 100 http://localhost:8080/":
  *
- * On loopback with 8k jpeg:
- *  - Thinkpad R61 (Centrino) can get ~11k requests / sec.
- *  - Thinkpad X1 Carbon (Core i5 1.7Ghz) gets ~26k requests/sec.
+ *  - Thinkpad R61 (2 cores, Centrino Core 2 Duo @ 2Ghz)
+ *      ~11k requests / sec.
+ *  - Thinkpad X1 Carbon (4 cores, Core i5 @ 1.7Ghz)
+ *      ~26k requests/sec.
+ *  - Desktop (4 cores, AMD Phenom II @ 2.8 Ghz)
+ *      ~25k requests/sec.
  *
- * In every test, "ab" is the bottleneck, maxing out the CPU. This program
- * can probably handle far more traffic than the numbers indicate above.
- * The bottleneck will always be bandwith, or the test program if
+ * In every test "ab" is the bottleneck, maxing out one CPU core. I suspect
+ * that's why the 4 core machines do better - in 2 cores either ab or share
+ * gets interrupted by the other things (window manager / terminal / etc).
+ *
+ * This program can probably handle far more traffic than the numbers above
+ * indicate. The bottleneck will always be bandwith, or the test program if
  * testing locally.
- *
  */
 
 /*
