@@ -10,11 +10,16 @@
  *
  * ---
  *
+ * Using ab -n 100000 -c 100 for tests.
+ *
  * On loopback with 8k jpeg:
  *  - Thinkpad R61 (Centrino) can get ~11k requests / sec.
  *  - Thinkpad X1 Carbon (Core i5 1.7Ghz) gets ~26k requests/sec.
  *
- * Using ab -n 100000 -c 100 for tests.
+ * In every test, "ab" is the bottleneck, maxing out the CPU. This program
+ * can probably handle far more traffic than the numbers indicate above.
+ * The bottleneck will always be bandwith, or the test program if
+ * testing locally.
  *
  */
 
@@ -75,7 +80,16 @@ char *headers;      // HTTP headers
 off_t *offset;              // Current offset within data file at index's fd
 uint32_t offsetsz = 100;    // Size of 'offset'
 
-/* Write to socket using sendfile
+/*****
+ *
+ * EVENTS
+ * Each of these gets called once for each request.
+ *
+ *****/
+
+/* Write to socket using sendfile.
+ * This is the heart of the program - the file actually gets output.
+ *
  * Return 1 if we're done writing, 0 if more is needed.
  */
 int swrite_sendfile(int connfd, int datafd, off_t datasz) {
@@ -85,6 +99,7 @@ int swrite_sendfile(int connfd, int datafd, off_t datasz) {
 #ifdef DEBUG
     printf("Calling sendfile with: %d %d &%ld %ld\n", connfd, datafd, offset[connfd], datasz - offset[connfd]);
 #endif
+
     num_wrote = sendfile(connfd, datafd, &offset[connfd], datasz - offset[connfd]);
     if (num_wrote == -1) {
         if (errno == EAGAIN || errno == ECONNRESET) {
@@ -193,47 +208,87 @@ int shut(int connfd, int efd) {
     return 0;
 }
 
-/* Process an epoll event */
+/*****
+ *
+ * EVENT LOOP
+ * These two functions handle incoming epoll events.
+ *
+ *****/
+
+/* Process a single epoll event */
 void do_event(
     struct epoll_event *evp, int sockfd, int efd, int datafd, off_t datasz) {
 
     int connfd = -1;
     int done = 0;        // Are we done writing?
+    uint32_t events = evp->events;
 
 #ifdef DEBUG
-    printf("%d: fd = %d, offset = %jd\n", getpid(), evp->data.fd, (intmax_t) offset[evp->data.fd]);
+    printf("%d: events: %d, fd = %d, offset = %jd\n", getpid(), events, evp->data.fd, (intmax_t) offset[evp->data.fd]);
 #endif
 
-    if (evp->data.fd == sockfd) {
+    if (events & EPOLLIN) {
+        // We only listen to EPOLLIN for sockfd (the 'listen' socket)
+
 #ifdef DEBUG
         printf("%d: New connection\n", getpid());
 #endif
+
         acceptnew(sockfd, efd, evp);
 
-    } else {
+    } else if (events & EPOLLOUT) {
         connfd = evp->data.fd;
 
-        if (evp->events & EPOLLOUT) {
 #ifdef DEBUG
-            printf("%d: EPOLLOUT\n", getpid());
+        printf("%d: EPOLLOUT\n", getpid());
 #endif
 
-            done = swrite_sendfile(connfd, datafd, datasz);
+        done = swrite_sendfile(connfd, datafd, datasz);
 
-            if (done == 1) {
-                shut(connfd, efd);
-            }
-
+        if (done == 1) {
+            shut(connfd, efd);
         }
 
-        if (evp->events & EPOLLHUP) {
+    } else if (events & EPOLLHUP) {
+        connfd = evp->data.fd;
+
 #ifdef DEBUG
-            printf("%d: EPOLLHUP\n", getpid());
+        printf("%d: EPOLLHUP\n", getpid());
 #endif
-            sclose(connfd);
+
+        sclose(connfd);
+    }
+}
+
+/* Wait for epoll events and act on them */
+void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
+
+    int i;
+    int num_ready;
+    struct epoll_event events[100];
+
+    while (1) {
+
+        num_ready = epoll_wait(efd, events, 100, -1);
+        if (num_ready == -1) {
+            error(EXIT_FAILURE, errno, "Error %d on epoll_wait", errno);
+        }
+
+#ifdef DEBUG
+        printf("%d: Num fd's ready = %d\n", getpid(), num_ready);
+#endif
+        for (i = 0; i < num_ready; i++) {
+            do_event(&events[i], sockfd, efd, datafd, datasz);
         }
     }
 }
+
+/*****
+ *
+ * INIT FUNCTIONS
+ * These run once on program startup
+ *
+ *****/
 
 /* Convert domain name to IP address, if needed */
 char *as_numeric(char *address) {
@@ -330,29 +385,6 @@ int start_epoll(int sockfd) {
     }
 
     return efd;
-}
-
-/* Wait for epoll events and act on them */
-void main_loop(int efd, int sockfd, int datafd, off_t datasz) {
-
-    int i;
-    int num_ready;
-    struct epoll_event events[100];
-
-    while (1) {
-
-        num_ready = epoll_wait(efd, events, 100, -1);
-        if (num_ready == -1) {
-            error(EXIT_FAILURE, errno, "Error %d on epoll_wait", errno);
-        }
-
-#ifdef DEBUG
-        printf("%d: Num fd's ready = %d\n", getpid(), num_ready);
-#endif
-        for (i = 0; i < num_ready; i++) {
-            do_event(&events[i], sockfd, efd, datafd, datasz);
-        }
-    }
 }
 
 /* Load the payload file and return it's fd.
@@ -470,7 +502,7 @@ int main(int argc, char **argv) {
     /* To make multi-process, fork here. Everything should just work.
      * In my tests it goes _slower_ if we fork.
      */
-    // fork();
+    //fork();
 
     int efd = start_epoll(sockfd);
 
