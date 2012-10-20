@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"flag"
+	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
@@ -11,8 +13,9 @@ import (
 )
 
 const (
-	DEFAULT_ADDRESS   = "127.0.0.1:8080"
-	DEFAULT_MIME_TYPE = "image/jpeg"
+	DEFAULT_HOST      = "127.0.0.1"
+	DEFAULT_PORT      = "8080"
+	DEFAULT_MIME_TYPE = "text/plain"
 	HEAD_TMPL         = "HTTP/1.0 200 OK\nCache-Control: max-age=31536000\nExpires: Thu, 31 Dec 2037 23:55:55 GMT\nContent-Type: {{.Mime}}\nContent-Length: {{.Length}}\n\n"
 )
 
@@ -27,7 +30,9 @@ func main() {
 
 	var oerr error
 
-	src, oerr = os.Open("test/head.jpg")
+	host, port, mimetype, filename := parseArgs()
+
+	src, oerr = os.Open(filename)
 	if oerr != nil {
 		log.Fatal("Error opening payload. ", oerr)
 	}
@@ -47,7 +52,7 @@ func main() {
 	tmplData := struct {
 		Mime   string
 		Length int64
-	}{DEFAULT_MIME_TYPE, size}
+	}{mimetype, size}
 
 	headBuf := &bytes.Buffer{}
 	terr = tmpl.Execute(headBuf, tmplData)
@@ -61,9 +66,10 @@ func main() {
 	ioutil.ReadAll(src)
 	src.Seek(0, os.SEEK_SET)
 
-	sock, lerr := net.Listen("tcp", DEFAULT_ADDRESS)
+	addr := host + ":" + port
+	sock, lerr := net.Listen("tcp", addr)
 	if lerr != nil {
-		log.Fatal("Error listening on ", DEFAULT_ADDRESS, ". ", lerr)
+		log.Fatal("Error listening on ", addr, ". ", lerr)
 	}
 
 	for {
@@ -115,6 +121,46 @@ func handle(conn net.Conn) {
 	//log.Println("CloseWrite")
 	werr = conn.(*net.TCPConn).CloseWrite()
 	if werr != nil {
+		log.Println("Error on CloseWrite", werr)
+	}
+
+	// Consume the input
+	for {
+		read, rerr = conn.Read(buf)
+		if read == 0 {
+			break
+		}
+	}
+
+	werr = conn.Close()
+	if werr != nil {
 		log.Println("Error on Close", werr)
 	}
+
+}
+
+func parseArgs() (host, port, mimetype, filename string) {
+
+	flag.Usage = Usage
+
+	hostf := flag.String("h", DEFAULT_HOST, "Host or IP to listen on")
+	portf := flag.String("p", DEFAULT_PORT, "Port to listen on")
+	mimetypef := flag.String("m", DEFAULT_MIME_TYPE, "Mime type of file")
+
+	if len(os.Args) < 2 {
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	flag.Parse()
+
+	return *hostf, *portf, *mimetypef, flag.Arg(0)
+}
+
+func Usage() {
+	fmt.Fprintf(os.Stderr, "Usage of %s:\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "  %s [options] [filename]\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "Options:\n")
+
+	flag.PrintDefaults()
 }
