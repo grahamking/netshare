@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"os"
+	"syscall"
 	"text/template"
 )
 
@@ -16,13 +16,16 @@ const (
 	DEFAULT_HOST      = "127.0.0.1"
 	DEFAULT_PORT      = "8080"
 	DEFAULT_MIME_TYPE = "text/plain"
-	HEAD_TMPL         = "HTTP/1.0 200 OK\nCache-Control: max-age=31536000\nExpires: Thu, 31 Dec 2037 23:55:55 GMT\nContent-Type: {{.Mime}}\nContent-Length: {{.Length}}\n\n"
+	HEAD_TMPL         = "HTTP/1.0 200 OK\r\nConnection: close\r\nCache-Control: max-age=31536000\r\nExpires: Thu, 31 Dec 2037 23:55:55 GMT\r\nContent-Type: {{.Mime}}\r\nContent-Length: {{.Length}}\r\n\r\n"
 )
 
 var (
-	src     *os.File
-	size    int64
-	headers string
+	src      *os.File
+	size     int64
+	headers  string
+	offsetsz int     = 4096
+	offset   []int64 = make([]int64, offsetsz, offsetsz)
+	srcfd    int
 )
 
 func main() {
@@ -43,6 +46,8 @@ func main() {
 	}
 	size = fileinfo.Size()
 	log.Println("Payload size:", size)
+
+	srcfd = int(src.Fd())
 
 	tmpl, terr := template.New("headers").Parse(HEAD_TMPL)
 	if terr != nil {
@@ -83,6 +88,57 @@ func main() {
 	}
 }
 
+func handle(conn net.Conn) {
+
+	var werr error
+
+	_, werr = conn.Write([]byte(headers))
+	if werr != nil {
+		log.Fatal("Error writing headers", werr)
+	}
+
+	outfile, ferr := conn.(*net.TCPConn).File()
+	if ferr != nil {
+		log.Fatal("Error getting conn fd", ferr)
+	}
+	outfd := int(outfile.Fd())
+	if outfd >= offsetsz {
+		growOffset()
+	}
+
+	log.Println("outfd: ", outfd)
+	currOffset := &offset[outfd]
+	_, werr = syscall.Sendfile(outfd, srcfd, currOffset, int(size))
+	if werr != nil {
+		log.Fatal("Sendfile error:", werr)
+	}
+	//log.Println(outfd, ": Sendfile wrote: ", write)
+
+	/*
+		werr = conn.(*net.TCPConn).CloseWrite()
+		if werr != nil {
+			log.Println("Error on CloseWrite", werr)
+		}
+	*/
+}
+
+func growOffset() {
+
+	newSize := offsetsz * 2
+	log.Println("Growing offset to:", offsetsz)
+
+	newOff := make([]int64, newSize, newSize)
+	log.Println("len of offset is now:", len(offset))
+
+	copied := copy(newOff, offset)
+	log.Println("Copied ", copied)
+
+	offset = newOff
+	offsetsz = newSize
+	log.Println("Growth done")
+}
+
+/*
 func handle(conn net.Conn) {
 
 	var pos int64
@@ -138,6 +194,7 @@ func handle(conn net.Conn) {
 	}
 
 }
+*/
 
 func parseArgs() (host, port, mimetype, filename string) {
 
