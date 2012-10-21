@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime"
 	"sync"
 	"syscall"
 	"text/template"
@@ -25,7 +26,7 @@ var (
 	src      *os.File
 	size     int64
 	headers  string
-	offsetsz int     = 100
+	offsetsz int     = 4096
 	offset   []int64 = make([]int64, offsetsz, offsetsz)
 	srcfd    int
 	mutex    sync.Mutex
@@ -33,6 +34,9 @@ var (
 
 func main() {
 	var oerr error
+
+	runtime.GOMAXPROCS(runtime.NumCPU() - 1)
+	log.Println("Set GOMAXPROCS to ", runtime.NumCPU()-1)
 
 	host, port, mimetype, filename := parseArgs()
 
@@ -94,11 +98,15 @@ func main() {
 func handle(conn net.Conn) {
 
 	var rerr, werr error
+	var wrote int
 	buf := make([]byte, 32*1024)
 
-	_, werr = conn.Write([]byte(headers))
+	wrote, werr = conn.Write([]byte(headers))
 	if werr != nil {
 		log.Fatal("Error writing headers", werr)
+	}
+	if wrote != len([]byte(headers)) {
+		log.Fatal("Error: Wrote ", wrote, " headers bytes. Expected ", len([]byte(headers)))
 	}
 
 	outfile, ferr := conn.(*net.TCPConn).File()
@@ -111,10 +119,14 @@ func handle(conn net.Conn) {
 	}
 
 	currOffset := &offset[outfd]
-	_, werr = syscall.Sendfile(outfd, srcfd, currOffset, int(size))
-	if werr != nil {
-		log.Fatal("Sendfile error:", werr)
+	for *currOffset < size {
+		wrote, werr = syscall.Sendfile(outfd, srcfd, currOffset, int(size))
+		if werr != nil {
+			log.Fatal("Sendfile error:", werr)
+		}
+		//log.Println("Sendfile wrote ", wrote)
 	}
+
 	//log.Println(outfd, ": Sendfile wrote: ", write)
 
 	werr = conn.(*net.TCPConn).CloseWrite()
@@ -133,6 +145,12 @@ func handle(conn net.Conn) {
 		}
 	}
 
+	offset[outfd] = 0
+
+	werr = outfile.Close()
+	if werr != nil {
+		log.Println("Error on outfile Close", werr)
+	}
 	werr = conn.Close()
 	if werr != nil {
 		log.Println("Error on Close", werr)
