@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 	"text/template"
 )
@@ -16,24 +18,26 @@ const (
 	DEFAULT_HOST      = "127.0.0.1"
 	DEFAULT_PORT      = "8080"
 	DEFAULT_MIME_TYPE = "text/plain"
-	HEAD_TMPL         = "HTTP/1.0 200 OK\r\nConnection: close\r\nCache-Control: max-age=31536000\r\nExpires: Thu, 31 Dec 2037 23:55:55 GMT\r\nContent-Type: {{.Mime}}\r\nContent-Length: {{.Length}}\r\n\r\n"
+	HEAD_TMPL         = "HTTP/1.0 200 OK\r\nCache-Control: max-age=31536000\r\nExpires: Thu, 31 Dec 2037 23:55:55 GMT\r\nContent-Type: {{.Mime}}\r\nContent-Length: {{.Length}}\r\n\r\n"
 )
 
 var (
 	src      *os.File
 	size     int64
 	headers  string
-	offsetsz int     = 4096
+	offsetsz int     = 100
 	offset   []int64 = make([]int64, offsetsz, offsetsz)
 	srcfd    int
+	mutex    sync.Mutex
 )
 
 func main() {
-	log.Println("Start")
-
 	var oerr error
 
 	host, port, mimetype, filename := parseArgs()
+
+	fmt.Printf("Serving %s with mime type %s\n", filename, mimetype)
+	fmt.Printf("Listening on %s:%s\n", host, port)
 
 	src, oerr = os.Open(filename)
 	if oerr != nil {
@@ -45,7 +49,6 @@ func main() {
 		log.Fatal("Error Stat on payload")
 	}
 	size = fileinfo.Size()
-	log.Println("Payload size:", size)
 
 	srcfd = int(src.Fd())
 
@@ -90,7 +93,8 @@ func main() {
 
 func handle(conn net.Conn) {
 
-	var werr error
+	var rerr, werr error
+	buf := make([]byte, 32*1024)
 
 	_, werr = conn.Write([]byte(headers))
 	if werr != nil {
@@ -103,10 +107,9 @@ func handle(conn net.Conn) {
 	}
 	outfd := int(outfile.Fd())
 	if outfd >= offsetsz {
-		growOffset()
+		growOffset(outfd)
 	}
 
-	log.Println("outfd: ", outfd)
 	currOffset := &offset[outfd]
 	_, werr = syscall.Sendfile(outfd, srcfd, currOffset, int(size))
 	if werr != nil {
@@ -114,28 +117,49 @@ func handle(conn net.Conn) {
 	}
 	//log.Println(outfd, ": Sendfile wrote: ", write)
 
-	/*
-		werr = conn.(*net.TCPConn).CloseWrite()
-		if werr != nil {
-			log.Println("Error on CloseWrite", werr)
+	werr = conn.(*net.TCPConn).CloseWrite()
+	if werr != nil {
+		log.Println("Error on CloseWrite", werr)
+	}
+
+	// Consume input
+	for {
+		_, rerr = conn.Read(buf)
+		if rerr == io.EOF {
+			break
+		} else if rerr != nil {
+			log.Println("Error consuming read input: ", rerr)
+			break
 		}
-	*/
+	}
+
+	werr = conn.Close()
+	if werr != nil {
+		log.Println("Error on Close", werr)
+	}
 }
 
-func growOffset() {
+func growOffset(outfd int) {
+
+	// Only one Go routine should grow the offset slice, otherwise chaos
+	mutex.Lock()
+
+	// Do we still need to do this? Previous lock holder might have done it
+	if outfd < offsetsz {
+		mutex.Unlock()
+		return
+	}
 
 	newSize := offsetsz * 2
-	log.Println("Growing offset to:", offsetsz)
+	log.Println("Growing offset to:", newSize)
 
 	newOff := make([]int64, newSize, newSize)
-	log.Println("len of offset is now:", len(offset))
-
-	copied := copy(newOff, offset)
-	log.Println("Copied ", copied)
+	copy(newOff, offset)
 
 	offset = newOff
 	offsetsz = newSize
-	log.Println("Growth done")
+
+	mutex.Unlock()
 }
 
 /*
