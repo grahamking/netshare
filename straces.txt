@@ -1,0 +1,72 @@
+# nginx
+
+accept4(7, {sa_family=AF_INET, sin_port=htons(50081), sin_addr=inet_addr("127.0.0.1")},
+[16], SOCK_NONBLOCK) = 8
+epoll_ctl(4, EPOLL_CTL_ADD, 8, {EPOLLIN|EPOLLET, {u32=860946640, u64=139952370286800}})
+= 0
+epoll_wait(4, {{EPOLLIN, {u32=860946640, u64=139952370286800}}}, 512, 60000) = 1
+recvfrom(8, "GET /index.html HTTP/1.0\r\nHost: "..., 1024, 0, NULL, NULL) = 87
+stat("/usr/share/nginx/www/index.html", {st_mode=S_IFREG|0644, st_size=151, ...}) = 0
+open("/usr/share/nginx/www/index.html", O_RDONLY|O_NONBLOCK) = 9
+fstat(9, {st_mode=S_IFREG|0644, st_size=151, ...}) = 0
+setsockopt(8, SOL_TCP, TCP_CORK, [1], 4) = 0
+writev(8, [{"HTTP/1.1 200 OK\r\nServer: nginx/1"..., 211}], 1) = 211
+sendfile(8, 9, [0], 151)                = 151
+shutdown(8, 1 /* send */)               = 0
+recvfrom(8, "", 4096, 0, NULL, NULL)    = 0
+write(5, "127.0.0.1 - - [20/Oct/2012:19:10"..., 100) = 100
+close(9)                                = 0
+close(8)                                = 0
+epoll_wait(4, ^C <unfinished ...>
+
+# share.c
+
+accept4(4, 0, NULL, SOCK_NONBLOCK)      = 6
+epoll_ctl(3, EPOLL_CTL_ADD, 6, {EPOLLOUT, {u32=6, u64=6}}) = 0
+epoll_wait(3, {{EPOLLOUT, {u32=6, u64=6}}}, 100, 4294967295) = 1
+sendfile(6, 5, [0], 171)                = 171
+epoll_ctl(3, EPOLL_CTL_MOD, 6, {EPOLLHUP, {u32=6, u64=6}}) = 0
+shutdown(6, 1 /* send */)               = 0
+epoll_wait(3, {{EPOLLHUP, {u32=6, u64=6}}}, 100, 4294967295) = 1
+close(6)                                = 0
+epoll_wait(3,
+
+# share.go
+
+[pid 22850] accept(4, {sa_family=AF_INET, sin_port=htons(47166), sin_addr=inet_addr("127.0.0.1")}, [16]) = 8
+[pid 22850] fcntl(8, F_SETFD, FD_CLOEXEC) = 0
+[pid 22850] fcntl(8, F_GETFL)           = 0x2 (flags O_RDWR)
+[pid 22850] fcntl(8, F_SETFL, O_RDWR|O_NONBLOCK) = 0
+[pid 22850] getsockname(8, {sa_family=AF_INET, sin_port=htons(8080), sin_addr=inet_addr("127.0.0.1")}, [16]) = 0
+[pid 22850] setsockopt(8, SOL_TCP, TCP_NODELAY, [1], 4) = 0
+[pid 22850] rt_sigprocmask(SIG_SETMASK, ~[RTMIN RT_1], [], 8) = 0
+[pid 22850] mmap(NULL, 8392704, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS|MAP_STACK, -1, 0) = 0x7fee8eb3b000
+[pid 22850] mprotect(0x7fee8eb3b000, 4096, PROT_NONE) = 0
+[pid 22850] clone(Process 22854 attached
+child_stack=0x7fee8f33aff0, flags=CLONE_VM|CLONE_FS|CLONE_FILES|CLONE_SIGHAND|CLONE_THREAD|CLONE_SYSVSEM|CLONE_SETTLS|CLONE_PARENT_SETTID|CLONE_CHILD_CLEARTID, parent_tidptr=0x7fee8f33b9d0, tls=0x7fee8f33b700, child_tidptr=0x7fee8f33b9d0) = 22854
+[pid 22850] rt_sigprocmask(SIG_SETMASK, [],  <unfinished ...>
+[pid 22854] set_robust_list(0x7fee8f33b9e0, 0x18 <unfinished ...>
+[pid 22850] <... rt_sigprocmask resumed> NULL, 8) = 0
+[pid 22854] <... set_robust_list resumed> ) = 0
+[pid 22850] accept(4, 0xf840000540, [112]) = -1 EAGAIN (Resource temporarily unavailable)
+[pid 22854] sigaltstack({ss_sp=0xf84008b000, ss_flags=0, ss_size=32768} <unfinished ...>
+[pid 22850] futex(0x5d5348, FUTEX_WAIT, 0, NULL <unfinished ...>
+[pid 22854] <... sigaltstack resumed> , NULL) = 0
+[pid 22854] rt_sigprocmask(SIG_SETMASK, [], NULL, 8) = 0
+[pid 22854] futex(0x5d5348, FUTEX_WAKE, 1) = 1
+[pid 22850] <... futex resumed> )       = 0
+[pid 22854] write(8, "HTTP/1.0 200 OK\r\nCache-Control: "..., 138 <unfinished ...>
+[pid 22850] epoll_ctl(7, EPOLL_CTL_ADD, 4, {EPOLLIN|EPOLLONESHOT|0x2000, {u32=4, u64=4}} <unfinished ...>
+[pid 22854] <... write resumed> )       = 138
+[pid 22850] <... epoll_ctl resumed> )   = 0
+[pid 22854] futex(0xf840073628, FUTEX_WAIT, 0, NULL <unfinished ...>
+[pid 22850] dup(8)                      = 9
+[pid 22850] fcntl(9, F_SETFD, FD_CLOEXEC) = 0
+[pid 22850] fcntl(9, F_GETFL)           = 0x802 (flags O_RDWR|O_NONBLOCK)
+[pid 22850] fcntl(9, F_SETFL, O_RDWR)   = 0
+[pid 22850] sendfile(9, 3, [0], 39)     = 39
+[pid 22850] shutdown(8, 1 /* send */)   = 0
+[pid 22850] read(8, "GET / HTTP/1.0\r\nHost: localhost:"..., 32768) = 82
+[pid 22850] read(8, "", 32768)          = 0
+[pid 22850] close(8)                    = 0
+
