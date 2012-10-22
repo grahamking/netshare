@@ -35,13 +35,13 @@ var (
 func main() {
 	var oerr error
 
-	runtime.GOMAXPROCS(runtime.NumCPU() - 1)
-	log.Println("Set GOMAXPROCS to ", runtime.NumCPU()-1)
-
-	host, port, mimetype, filename := parseArgs()
+	host, port, mimetype, procs, filename := parseArgs()
 
 	fmt.Printf("Serving %s with mime type %s\n", filename, mimetype)
 	fmt.Printf("Listening on %s:%s\n", host, port)
+
+	runtime.GOMAXPROCS(procs)
+	log.Println("Set GOMAXPROCS to ", procs)
 
 	src, oerr = os.Open(filename)
 	if oerr != nil {
@@ -238,13 +238,14 @@ func handle(conn net.Conn) {
 }
 */
 
-func parseArgs() (host, port, mimetype, filename string) {
+func parseArgs() (host, port, mimetype string, procs int, filename string) {
 
 	flag.Usage = Usage
 
 	hostf := flag.String("h", DEFAULT_HOST, "Host or IP to listen on")
 	portf := flag.String("p", DEFAULT_PORT, "Port to listen on")
 	mimetypef := flag.String("m", DEFAULT_MIME_TYPE, "Mime type of file")
+	procsf := flag.Int("c", 1, "Concurrent CPU cores to use.")
 
 	if len(os.Args) < 2 {
 		flag.Usage()
@@ -253,7 +254,7 @@ func parseArgs() (host, port, mimetype, filename string) {
 
 	flag.Parse()
 
-	return *hostf, *portf, *mimetypef, flag.Arg(0)
+	return *hostf, *portf, *mimetypef, *procsf, flag.Arg(0)
 }
 
 func Usage() {
