@@ -180,64 +180,6 @@ func growOffset(outfd int) {
 	mutex.Unlock()
 }
 
-/*
-func handle(conn net.Conn) {
-
-	var pos int64
-	var read, wrote int
-	var rerr, werr error
-	buf := make([]byte, 32*1024)
-
-	wrote, werr = conn.Write([]byte(headers))
-	if werr != nil {
-		log.Fatal("Error writing headers", werr)
-	}
-
-	for pos < size {
-
-		read, rerr = src.ReadAt(buf, pos)
-		if rerr != nil && rerr != io.EOF {
-			log.Println("Read error:", rerr)
-			break
-		}
-		//log.Println("Read bytes:", read)
-
-		pos += int64(read)
-
-		wrote, werr = conn.Write(buf[:read])
-		if werr != nil {
-			log.Println("Write error:", werr)
-			break
-		}
-		//log.Println("Wrote bytes:", wrote)
-
-		if wrote != read {
-			log.Println("Read / write mismatch. Read ", read, ", wrote ", wrote)
-		}
-	}
-
-	//log.Println("CloseWrite")
-	werr = conn.(*net.TCPConn).CloseWrite()
-	if werr != nil {
-		log.Println("Error on CloseWrite", werr)
-	}
-
-	// Consume the input
-	for {
-		read, rerr = conn.Read(buf)
-		if read == 0 {
-			break
-		}
-	}
-
-	werr = conn.Close()
-	if werr != nil {
-		log.Println("Error on Close", werr)
-	}
-
-}
-*/
-
 func parseArgs() (host, port, mimetype string, procs int, filename string) {
 
 	flag.Usage = Usage
