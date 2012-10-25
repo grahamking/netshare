@@ -1,4 +1,3 @@
-
 Serve a single file over the web quite fast.
 
 Build:
@@ -39,6 +38,8 @@ Other than than it mostly just uses `epoll` and `sendfile`, which are both wonde
 
 Linux only, recent kernel's (2.6.17+).
 
-Performance: Well that's difficult to judge. With an 8k jpeg, on loopback, I can get 11k requests a second on a low-spec laptop. The limiting factor in a performance test is nearly always going to be the bandwidth of your test clients.
+Performance: Well that's difficult to judge. With an 8k jpeg, on loopback, I can get 26k requests a second on my laptop. 
+The limiting factor in a performance test is nearly always going to be the bandwidth of your test clients.
+In my test the limiting factor is `ab`, which is maxing out a CPU.
 
 BUGS: /tmp/netshare_XXXXXX files are not cleaned up.
