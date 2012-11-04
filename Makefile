@@ -1,12 +1,15 @@
 CFLAGS=-Wall -Ofast
+CC=gcc
+bindir=/usr/bin/
+INSTALL_PROGRAM=$(bindir)install
 
-all: share
+all: netshare
 
 debug:
-	gcc -Wall -g -O0 share.c -o share
+	$(CC) -Wall -g -O0 netshare.c -o netshare
 
 clean:
-	rm -f share
+	rm -f netshare
 
 install:
-	cp share /usr/bin/netshare
+	$(INSTALL_PROGRAM) netshare $(DESTDIR)$(bindir)/netshare

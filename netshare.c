@@ -2,9 +2,9 @@
  * Serve a single file over the web, quite fast.
  *
  * Run it:
- *   share <myfile.txt>
+ *   netshare <myfile.txt>
  *   OR
- *   share -h example.com -p 80 -m text/html maintenance.html
+ *   netshare -h example.com -p 80 -m text/html maintenance.html
  *
  * Default host / port is localhost:8080, mimetype text/plain.
  *
@@ -20,7 +20,7 @@
  *      ~25k requests/sec.
  *
  * In every test "ab" is the bottleneck, maxing out one CPU core. I suspect
- * that's why the 4 core machines do better - in 2 cores either ab or share
+ * that's why the 4 core machines do better - in 2 cores either ab or netshare
  * gets interrupted by the other things (window manager / terminal / etc).
  *
  * This program can probably handle far more traffic than the numbers above
@@ -75,7 +75,7 @@
 #define DEFAULT_ADDRESS "127.0.0.1"
 #define DEFAULT_PORT 8080
 #define DEFAULT_MIME_TYPE "text/plain"
-#define USAGE "USAGE: share [-h host] [-p port] [-m mime/type] <filename>\n"
+#define USAGE "USAGE: netshare [-h host] [-p port] [-m mime/type] <filename>\n"
 
 // HTTP headers
 #define HEAD_TMPL "HTTP/1.0 200 OK\nCache-Control: max-age=31536000\nExpires: Thu, 31 Dec 2037 23:55:55 GMT\nContent-Type: %s\nContent-Length: %ld\n\n"
