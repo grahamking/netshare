@@ -129,6 +129,8 @@ func handle(conn net.Conn) {
 
 	//log.Println(outfd, ": Sendfile wrote: ", write)
 
+	offset[outfd] = 0
+
 	werr = conn.(*net.TCPConn).CloseWrite()
 	if werr != nil {
 		log.Println("Error on CloseWrite", werr)
@@ -144,8 +146,6 @@ func handle(conn net.Conn) {
 			break
 		}
 	}
-
-	offset[outfd] = 0
 
 	werr = outfile.Close()
 	if werr != nil {
