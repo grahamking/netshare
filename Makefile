@@ -1,7 +1,5 @@
 CFLAGS=-Wall -Ofast
-CC=gcc
-bindir=/usr/bin/
-INSTALL_PROGRAM=$(bindir)install
+BIN=$(DESTDIR)/usr/bin
 
 all: netshare
 
@@ -12,4 +10,5 @@ clean:
 	rm -f netshare
 
 install:
-	$(INSTALL_PROGRAM) netshare $(DESTDIR)$(bindir)/netshare
+	install -d $(BIN)
+	install netshare $(BIN)
