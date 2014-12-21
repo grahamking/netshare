@@ -1,0 +1,9 @@
+---
+- name: Run netshare
+  hosts: host2
+  sudo: True
+  tasks:
+      - name: Stop / remove netshare container
+        docker: name=netshare image=localhost:5000/netshare state=absent
+      - name: Start netshare container
+        command: docker run --name=netshare -d --restart=always -p 7999:7999 localhost:5000/netshare
